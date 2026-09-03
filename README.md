@@ -13,14 +13,13 @@ Step 3: Combine them
 
 Step 3.5 Analyze them together
 
-
-Overview
-Get Spectra
+Overview of functions:
+1. Get Spectra
 Choose a site/location and request from API to download
 then open and extract necessary info, interpret the data
 Visualize reflectances and save a simple (5-band) preliminary map
 
-Get Veg
+2. Get Veg
 Choose a site/location and filter the vegetation dataset
 Crosswalk / interpret the data
 Visualize and understand the distributions 
@@ -46,6 +45,11 @@ Ideally, there will be an output that shows the clustering of plots in the compo
 
 
 These values will be merged with the information extracted in the next step from remotely sensed imagery, so consider how they translate to a spatial pattern/grid/map.
+
+3. Combine them:
+3a. veg 'vibe' (PCA) vs. plot refl, plot CV: can we predict PC scores using reflectance summary metrics?
+3b. presence of a species or ground cover of interest vs. plot refl, plot CV
+3c. % cover of a species or ground cover of interest vs. plot refl, plot CV
 
 
 Details: Get Spectra
