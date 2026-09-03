@@ -16,6 +16,9 @@ Step 3.5 Analyze them together
 
 Overview
 Get Spectra
+Choose a site/location and request from API to download
+then open and extract necessary info, interpret the data
+Visualize reflectances and save a simple (5-band) preliminary map
 
 Get Veg
 Choose a site/location and filter the vegetation dataset
