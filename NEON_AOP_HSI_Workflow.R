@@ -13,9 +13,6 @@ library('terra')              # raster operations (replaces raster package)
 library('vegan')
 library('mapview')
 
-#set the directory to the repo
-repo_dir <- getwd()
-#CHANGE THIS to relevant directory... SMCE?
 home <- '/Users/khuelsma/' #"SMCE_dir"
 
 # LOCATION INFO -----------------------------------------------------------

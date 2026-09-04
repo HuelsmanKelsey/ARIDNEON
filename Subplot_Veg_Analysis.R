@@ -1,7 +1,3 @@
-neon_veg <- read.csv('NEON_veg_plots_2026.csv')
-subplots <- read.csv('NEON_veg_subplots_2026.csv')
-CPER_subs <- subplots %>%
-  filter(siteID == 'CPER')
 
 #can we locate the 1 m2 subplots?
 
@@ -20,8 +16,6 @@ subplots_1m <- sf::st_read('/Users/khuelsma/Desktop/NEON Spectral Variability/Re
 subplots_1m <- subplots_1m %>%
   filter(subpltDim == "1m x 1m") %>%
   filter(siteID == 'CPER')
-subplots_1m
-unique(subplots_1m$subpltDim)
 
 CPER_subs %>%
   group_by(plotID, boutNumber, divDataType, otherVariables) %>%
