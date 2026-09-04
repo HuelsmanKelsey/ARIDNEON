@@ -110,6 +110,55 @@ subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% {
   }
 }
 
+
+
+#shape files for associated data (although I am unclear how they relate)
+LL_pt <- sf::st_zm(sf::st_read("/Users/khuelsma/ARIDNEON/Augustine_VegPoint_2026.shp/VegPOINT_2026.shp"))
+pt_vect <- terra::vect(LL_pt)
+
+LL_poly <- sf::st_zm(sf::st_read("/Users/khuelsma/ARIDNEON/Augustine_VegPolygon_2026/VegPolygon2026.shp"))
+poly_vect <- terra::vect(LL_poly)
+
+CPER_1_10 <- readr::read_csv('CPER_2024_extractedplots1to10.csv')
+CPER_1_10 %>%
+  group_by(plotID, wv) %>%
+  summarise(meanrefl = mean(refl)) %>%
+  ggplot(aes(x = wv, y = meanrefl)) +
+  geom_point() +
+  theme_classic()
+
+raw_data <- rhdf5::h5read(hsi_files_2024[1], paste0("/", which_site, "/Reflectance/Reflectance_Data"))
+reordered_data <- aperm(raw_data, c(3, 2, 1)) #make sure rows and columns are properly transposed in this step
+epsg_code <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/EPSG Code"))
+
+file_wv_df <- data.frame(year = as.numeric(which_year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
+  mutate(
+    omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
+    keep_band = (wv > 450) & (wv < 2150),
+    data_ignore = md1$Data_Ignore_Value, 
+    SF = md1$Scale_Factor,
+    special_band = case_when(
+      wv == wv[which.min(abs(wv - 630))] ~ 'red', 
+      wv == wv[which.min(abs(wv - 800))] ~ 'NIR',
+      wv == wv[which.min(abs(wv - 570))] ~ 'green', 
+      wv == wv[which.min(abs(wv - 480))] ~ 'blue',
+      wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
+    ))
+kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
+hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', epsg_code))
+
+poly_proj <- terra::project(poly_vect, hsi_rast)
+
+hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
+hsi_rast_ignore <- terra::subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
+hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
+tile_extent <- terra::ext(hsi_rast)
+
+subplots_shp_aligned <- terra::project(subplot_shp_1, hsi_rast) #can adjust to any subplot input
+subplots_shp_aligned
+
+
+#if you need to extract HSI:
 #same for HSI
 path <- img
 
@@ -242,6 +291,8 @@ summary_1m <- extracted_1m_long %>%
 #            sd_refl = sd(refl),
 #          se_refl = sd_refl/sqrt(n()),
 #           CV_refl = sd_refl/mean_refl)
+
+
 
 #if you need to download it:
 

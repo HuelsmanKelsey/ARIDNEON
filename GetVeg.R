@@ -339,6 +339,23 @@ ARID_Annual_Obs <- ARID_Obs %>%
   select(-mvals, -perccovs, -mean_val, -max_val, -max_bout, -mean_bout, -n_bouts, -n_remarks) %>%
   print()
 
+# Visualize and understand the distributions ?
+
+# Summarize: 
+# Whole plot: P/A
+# whole plot: size-specific presences and % cover (for 1m)
+# subplot specific: P/A (each subplot)
+# vegetation vibe: PA, % cover
+
+#whole plot PA
+
+#whole plot summary of subplots
+
+#subplot specific pairings
+
+# capturing vegetation "vibe" using PA
+
+# capturing vegetation “vibe” using % cover
 # Analysis of 1m plant cover, CPER 2024 ------------------------------------
 
 #this is every single 1m subplot from CPER 2024
