@@ -47,15 +47,16 @@ library('foreach')
 
 # Workflow:  --------------------------------------------------------------
 # Choose a site/location and filter the vegetation dataset
-repo_dir <- '/Users/khuelsma/ARIDNEON/'
+repo_dir <- '/Users/khuelsma/Desktop/ARIDNEON/'
 setwd(repo_dir)
-#plots from ARID sites
-ARID_veg <- read.csv('NEON_ARID_veg.csv')
-#subplots from ARID sites
-subplots <- read.csv('NEON_ARID_subs.csv')
 
+#plots and subplots from ARID sites: CPER, RMNP, STER, JORN, SRER
+ARID_veg <- read.csv('NEON_ARID_veg.csv')
+subplots <- read.csv('NEON_ARID_subs.csv')
 #subplots from CPER only
 CPER_subs <- subplots %>%
+  filter(siteID == 'CPER')
+CPER_veg <- ARID_veg %>%
   filter(siteID == 'CPER')
 
 # Crosswalk / interpret the data
@@ -81,12 +82,15 @@ Event_subplots <- subplots %>%
          samplingProtocolVersion)
 # ^ this gets rbinded to the next section
 Event <- ARID_veg %>%
+  #create variables that are in the subplot dataset so we can combine the two
   mutate(divDataType = NA,
          otherVariablesPresent = NA,
          otherVariables = NA,
          percentCover = NA) %>%
   select(names(Event_subplots)) %>%
   rbind(Event_subplots) %>% 
+  
+  #now Event_subplots is in here, so we start renaming, etc.
   dplyr::rename(
     coordinateUncertaintyInMeters = coordinateUncertainty,
     minimumElevationInMeters = elevation,
@@ -98,7 +102,7 @@ Event <- ARID_veg %>%
     year = format(as.Date(endDate, format="%Y-%m-%d"),"%Y"),
     #location = siteName, #domainID,
     locationID = siteID,
-    #event ID will indicate both subplot and bout; if there are two bouts, can take max.
+    #event ID will indicate both subplot and bout; if there are multiple bouts, can take annual max.
     eventID = paste0(plotID, '_', subplotID, '_', year, '_', boutNumber),
     eventRemarks = ifelse(is.na(samplingImpractical), NA, paste('sampling issues:', samplingImpractical, ':', samplingImpracticalRemarks)),
     siteNumber = paste0(domainID, '_', siteID),
@@ -113,6 +117,8 @@ Event <- ARID_veg %>%
     
     #parent_event for annual survey (for combining bouts)
     parentEventID = paste0(plotID, '_', subplotID, '_', year),
+    
+    #adding all smaller scale occurrences to broader ones
     contained_within_100 = case_when(
       sampleSizeValue == 100 ~ paste0(plotID, '_', subplotID, '_', year),
       sampleSizeValue == 10 ~ paste0(plotID, '_', paste0(strtrim(subplotID, 7), 0), '_', year),
@@ -153,7 +159,6 @@ Occurrence_subplots <- subplots %>%
          taxonRank, family, scientificName, targetTaxaPresent, heightPlantOver300cm,
          heightPlantSpecies, recordedBy, measuredBy, identificationHistoryID, identificationReferences, identificationQualifier)
 # ^ this gets rbinded in the next section
-#left_join(n_subplots_1m_year) %>%
 Occurrence <- ARID_veg %>%
   mutate(divDataType = NA,
          otherVariablesPresent = NA,
@@ -270,10 +275,16 @@ ARID_Obs <- Occurrence %>%
 tot_cov_by_group <- ARID_Obs %>% 
   group_by(subplotID, plotID, year, boutNumber, coverLocation) %>% 
   summarise(totcov = sum(percentCover)) 
-
 tot_cov_by_subplot <- tot_cov_by_group %>%
   group_by(subplotID, plotID, boutNumber, year) %>%
   summarise(totcov2 = sum(totcov))
+
+#Looking at bouts within a year:
+ARID_Obs %>%
+  group_by(year, siteNumber) %>%
+  summarise(n_bouts = n_distinct(boutNumber)) %>%
+  filter(n_bouts > 1) %>% 
+  distinct(siteNumber, year, n_bouts)
 
 #ANNUAL Summary: simplifying multiple bouts per year by taking max val, just to characterize overall
 ARID_Annual_Obs <- ARID_Obs %>%
@@ -331,7 +342,7 @@ ARID_Annual_Obs <- ARID_Obs %>%
 # Analysis of 1m plant cover, CPER 2024 ------------------------------------
 
 #this is every single 1m subplot from CPER 2024
-cover_1m <- ARID_Annual_Obs %>% #or can do ARID_Obs
+cover_1m <- ARID_Annual_Obs %>% #or can do ARID_Obs for multiple bouts!
   filter(sampleSizeValue == 1) %>%
   filter(locationID == 'CPER') %>%
   filter(year == 2024) %>%
@@ -374,8 +385,7 @@ mat_spec <- percentCoverSpecific_wide %>%
 row.names(mat_spec) <- percentCoverSpecific_wide$eventID
 
 
-
-# specific PCA and general PCA --------------------------------------------
+# PCA: specific and general --------------------------------------------
 # Specific cover PCA ------------------------------------------------------
 spec_pca <- pca(mat_spec, scale = TRUE)
 
