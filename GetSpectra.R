@@ -40,7 +40,7 @@ library('foreach')
 
 # Choose a site/location and open or request from API to download
 
-#can use all_NEON_plots w LL / EN centroids or shapefiles
+#can use all_NEON_plots w LL / EN centroids or shapefiles, both are from NEON's site
 all_NEON_plots <- read.csv(file = 'All_NEON_TOS_Plot_Centroids_V11.csv')
 plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
 #CPER plots 
@@ -51,17 +51,10 @@ subplots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/R
 subplot_shp_CPER_plants <- subset(subplots_shp, stringr::str_detect(subplots_shp$plotID, 'CPER') &
                                    'div' %in% subplots_shp$appMods)
 
-#subplot shapes we can use to extract values
-subplot_shp_100 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_100'))
-subplot_shp_10 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_10_'))
-subplot_shp_1 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_1_'))
-
 #if you have the data downloaded already: 
-
-# open it using files list: 
-#load file names:
+# open it using files list (made using checkFilesExist at the end of this file)
 CPER_2024_files <- read_csv('CPER_filelist_2024.csv')
-#lists of rgb (rgb_path) vs. hsi (path) -- created above
+#create separate lists of rgb (rgb_path) vs. hsi (path) 
 rgb_files_2024 <- CPER_2024_files$rgb_path
 hsi_files_2024 <- CPER_2024_files$path
 
@@ -70,14 +63,22 @@ tilemap_rgb_list <- foreach (img = rgb_files_2024) %do% {
   tilemap <- terra::rast(img)
   #terra::plotRGB(tilemap)
 }
-#full site
+#full site map (where sampling occurred)
 full_site_2024 <-  terra::merge(terra::sprc(tilemap_rgb_list))
 #terra::plotRGB(full_site_2021)
 
 #terra::plot(LL_poly$geometry, add = TRUE)
 #terra::crs(LL_poly)
 
-# 1) make maps,
+# 1) make rgb maps of subplots
+#subplot shapes we can use to extract values
+subplot_shp_400 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_400'))
+subplot_shp_100 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_100'))
+subplot_shp_10 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_10_'))
+subplot_shp_1 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_1_'))
+
+which_subplots <- subplot_shp_400 #(or 100, 10 or 1)
+
 #pulling out subplots from RGB imagery
 subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% { 
   #individual img is a row from the tilemap rgb list (or whatever is entered above)
@@ -85,7 +86,7 @@ subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% {
   #establish the extent of the rgb tile so you can clip the list of all plots later to just those in the tile
   tile_extent <- terra::ext(tilemap)
   #project subplot shape file to the tile map so we can extract
-  subplots_shp_aligned <- terra::project(subplot_shp_1, tilemap)
+  subplots_shp_aligned <- terra::project(which_subplots, tilemap)
   #filter all the subplots to just the ones in the tile's extent
   plots_in_tile <- subplots_shp_aligned[tile_extent]
 
@@ -108,6 +109,7 @@ subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% {
     }
 }
 
+
 # 2) load extracted data OR extract it:
 
 # load what I already extracted OR 
@@ -119,10 +121,15 @@ CPER_16_23 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots16to23.cs
 which_site <- 'CPER'
 which_year <- 2024
 input <- hsi_files_2024
+#this creates a list of hyperspectral raster or special band rasters of each tile
+CPER_spbands_tile_list <- c()
 CPER_hsi_tile_list <- c()
+
 foreach( 
   img = 1:length(input)) %do% {
+    
     path <- input[[img]]
+    
     # Safe read to avoid crashes from corrupted files
     file_is_readable <- tryCatch({
       md1 <- rhdf5::h5readAttributes(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
@@ -134,146 +141,9 @@ foreach(
     })
     #if the file isn't readable go to the next one; if it is, it will continue.
     if (!file_is_readable) next
-    md2 <- rhdf5::h5readAttributes(path, paste0('/', which_site, '/Reflectance'))
-    wv <- rhdf5::h5read(path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
-    omit_windows <- data.frame(
-      omit_1_0 = md2$Band_Window_1_Nanometers[1], omit_1_f = md2$Band_Window_1_Nanometers[2],
-      omit_2_0 = md2$Band_Window_2_Nanometers[1], omit_2_f = md2$Band_Window_2_Nanometers[2]
-    )
     
-    #put metadata into wv df
-    file_wv_df <- data.frame(year = as.numeric(which_year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
-      mutate(
-        omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
-        keep_band = (wv > 450) & (wv < 2150),
-        data_ignore = md1$Data_Ignore_Value, 
-        SF = md1$Scale_Factor,
-        special_band = case_when(
-          wv == wv[which.min(abs(wv - 630))] ~ 'red', wv == wv[which.min(abs(wv - 800))] ~ 'NIR',
-          wv == wv[which.min(abs(wv - 570))] ~ 'green', wv == wv[which.min(abs(wv - 480))] ~ 'blue',
-          wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
-        ))
-    
-    kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
-    raw_data <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-    reordered_data <- aperm(raw_data, c(3, 2, 1)) #make sure rows and columns are properly transposed in this step
-    epsg_code <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/EPSG Code"))
-    map_info <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-    map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-    map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5]) #which is NOT the same as naming convention
-    E_min <- map_easting
-    E_max <- map_easting + 1000
-    N_min <- map_northing - 1000
-    N_max <- map_northing
-    
-    hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', epsg_code))
-    terra::ext(hsi_rast_raw) <- c(E_min, 
-                                  E_max,
-                                  N_min, 
-                                  N_max)
-    names(hsi_rast_raw) <- file_wv_df$band
-    #clean raster: remove atmospheric absorption windows; ignore ignore values; divide by scale factor
-    hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
-    hsi_rast_ignore <- terra::subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
-    hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
-    # ^this is the raster with ALL the reflectances in it, which should be used for extracting.
-    
-    # * * * incorporate / check for the following:
-    #if you need to extract HSI:
-    path <- img
-    
-    subplots_hsi_1m <- foreach (
-      img = hsi_files_2024,
-      .combine = rbind) %do% {
-        
-        which_site = 'CPER'
-        which_year = 2024
-        path <- img
-        
-        # Safe read to avoid crashes from corrupted files
-        file_is_readable <- tryCatch({
-          md1 <- rhdf5::h5readAttributes(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-          TRUE
-        }, error = function(e) {
-          warning(paste("\nSkipping corrupted or inaccessible file:", path))
-          rhdf5::h5closeAll()
-          FALSE
-        })
-        
-        if (file_is_readable) {  #if the file isn't readable go to the next one; if it is, it will continue.
-          md2 <- rhdf5::h5readAttributes(path, paste0('/', which_site, '/Reflectance'))
-          wv <- rhdf5::h5read(path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
-          omit_windows <- data.frame(
-            omit_1_0 = md2$Band_Window_1_Nanometers[1], omit_1_f = md2$Band_Window_1_Nanometers[2],
-            omit_2_0 = md2$Band_Window_2_Nanometers[1], omit_2_f = md2$Band_Window_2_Nanometers[2]
-          )
-          #put metadata into wv df
-          file_wv_df <- data.frame(year = as.numeric(which_year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
-            mutate(
-              omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
-              keep_band = (wv > 450) & (wv < 2150),
-              data_ignore = md1$Data_Ignore_Value, 
-              SF = md1$Scale_Factor,
-              special_band = case_when(
-                wv == wv[which.min(abs(wv - 630))] ~ 'red', 
-                wv == wv[which.min(abs(wv - 800))] ~ 'NIR',
-                wv == wv[which.min(abs(wv - 570))] ~ 'green', 
-                wv == wv[which.min(abs(wv - 480))] ~ 'blue',
-                wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
-              ))
-          
-          kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
-          raw_data <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-          reordered_data <- aperm(raw_data, c(3, 2, 1)) #make sure rows and columns are properly transposed in this step
-          epsg_code <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/EPSG Code"))
-          map_info <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-          map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-          map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5]) #which is NOT the same as naming convention
-          E_min <- map_easting
-          E_max <- map_easting + 1000
-          N_min <- map_northing - 1000
-          N_max <- map_northing
-          
-          hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', epsg_code))
-          rm(raw_data, reordered_data) #once this is turned into a raster, remove it to save memory
-          gc() # Force garbage collection
-          
-          terra::ext(hsi_rast_raw) <- c(E_min, 
-                                        E_max,
-                                        N_min, 
-                                        N_max)
-          names(hsi_rast_raw) <- file_wv_df$band
-          
-          #clean raster
-          hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
-          hsi_rast_ignore <- terra::subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
-          hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
-          tile_extent <- terra::ext(hsi_rast)
-          
-          subplots_shp_aligned <- terra::project(subplot_shp_1, hsi_rast) #can adjust to any subplot input
-          
-          plots_in_tile <- subplots_shp_aligned[tile_extent]
-          
-        } #if readable
-        if (nrow(plots_in_tile) > 0) {
-          plot_lookup <- data.frame(
-            ID = 1:nrow(plots_in_tile),
-            plotID = plots_in_tile$plotID,
-            subplotID = plots_in_tile$subplotID
-          )
-          #extract the data for a nice lil dataframe
-          extracted_plot_data <- terra::extract(hsi_rast, plots_in_tile, cells = TRUE, xy = TRUE)
-          extracted_data_labeled <- merge(extracted_plot_data, plot_lookup, by = "ID") %>%
-            mutate(cell_easting = x,
-                   cell_northing = y)
-        }
-        #extracted_data_labeled
-      }
-    extracted_1m <- subplots_hsi_1m
-    
-    #extract wavelengths: only need one image from a year
-    path <- hsi_files_2024[1]
-    md1 <- rhdf5::h5readAttributes(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
+    if (file_is_readable) {
+      
     md2 <- rhdf5::h5readAttributes(path, paste0('/', which_site, '/Reflectance'))
     wv <- rhdf5::h5read(path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
     omit_windows <- data.frame(
@@ -294,71 +164,108 @@ foreach(
           wv == wv[which.min(abs(wv - 480))] ~ 'blue',
           wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
         ))
+    
     kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
     
-    extracted_1m_long <- extracted_1m %>%
-      pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
-      left_join(kept_bands) %>%
-      select(cell, cell_easting, cell_northing,
-             plotID, subplotID,
-             band, year, wv, refl) %>%
-      mutate(eventID = paste0(plotID, '_', subplotID, '_', year))
+    raw_data <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
+    reordered_data <- aperm(raw_data, c(3, 2, 1)) #make sure rows and columns are properly transposed in this step
+    epsg_code <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/EPSG Code"))
+    map_info <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
+    map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
+    map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5]) #which is NOT the same as naming convention
+    E_min <- map_easting
+    E_max <- map_easting + 1000
+    N_min <- map_northing - 1000
+    N_max <- map_northing
     
-    summary_1m <- extracted_1m_long %>%
-      group_by(eventID, wv) %>%
-      summarise(mean_refl = mean(refl))
-    #if used buffer and sample more than 1 cell
-    #            sd_refl = sd(refl),
-    #          se_refl = sd_refl/sqrt(n()),
-    #           CV_refl = sd_refl/mean_refl)
+    hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', epsg_code))
+    #once a raster is made from raw data, clean up big df's to save memory:
+    rm(raw_data, reordered_data)
+    gc() # Force garbage collection
     
+    #set extent and names of raster:
+    terra::ext(hsi_rast_raw) <- c(E_min, 
+                                  E_max,
+                                  N_min, 
+                                  N_max)
+    names(hsi_rast_raw) <- file_wv_df$band
+    #clean raster: remove atmospheric absorption windows; ignore values; divide by scale factor
+    hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
+    hsi_rast_ignore <- terra::subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
+    hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
+    #export the list of regular rasters here:
+    CPER_hsi_tile_list[[paste0(img)]] <- hsi_rast
     
-    #end extracting... the following is "special bands"
+    # ^this is the raster with ALL the reflectances in it, which should be used for extracting.
     
-    #the following limits it to special bands:
+    # special bands raster:
     sp_bands_rast <- hsi_rast[[!is.na(kept_bands$special_band)]]
     names(sp_bands_rast) <- unique(kept_bands$special_band[!is.na(kept_bands$special_band)])
-    
-    #export the list here:
-    CPER_hsi_tile_list[[paste0(img)]] <- sp_bands_rast
+    #export the list of special band rasters here:
+    CPER_spbands_tile_list[[paste0(img)]] <- sp_bands_rast
+    }
   }
 
-#from the tile list... grab relevant locations:
-foreach(t = 1:23) %do% {
-  #take the raster and extract polygons:
-  this_tile <- paste0('Users/khuelsma/indices_CPER_2024_', t)
-  terra::(this_tile)
 
-  tile_extent <- ext(this_tile)
-  plots_projected <- terra::project(plots_shp, this_tile) #can also use David's data here
-  plots_in_tile <- plots_projected[tile_extent]
+#this little tidbit pulls out 1m subplot reflectances from each tile
+#new input is CPER_spbands_tile_list or CPER_hsi_tile_list
+input <- CPER_hsi_tile_list
+which_subplots <- subplot_shp_1
 
-  PRI_rast <- (this_tile[['NIR']] - this_tile[['green']]) / (this_tile[['NIR']] + this_tile[['green']])
+subplots_hsi_1m <- foreach( 
+  img = 1:length(input),
+  .combine = rbind) %do% {
+    
+    hsi_rast <- input[[img]]
+    #if you need to extract HSI: align hsi_rast to whatever you're using to extract (shape file or proj)
+    tile_extent <- terra::ext(hsi_rast)
+    subplots_shp_aligned <- terra::project(which_subplots, hsi_rast) #can adjust to any subplot input
+    #restrict to just the subplots in that tile
+    plots_in_tile <- subplots_shp_aligned[tile_extent]
+    if (nrow(plots_in_tile) > 0) { #if there are plots in the tile:
+      #create a lookup table with plotID and subplotID
+      plot_lookup <- data.frame(
+            ID = 1:nrow(plots_in_tile),
+            plotID = plots_in_tile$plotID,
+            subplotID = plots_in_tile$subplotID
+          )
+          
+      #extract the data for a nice lil dataframe
+      extracted_plot_data <- terra::extract(hsi_rast, plots_in_tile, cells = TRUE, xy = TRUE)
+      extracted_data_labeled <- merge(extracted_plot_data, plot_lookup, by = "ID") %>%
+            mutate(cell_easting = x,
+                   cell_northing = y)
+    
+    
+    extracted_data_labeled
+    }
+  } #end each tile
 
-  NDVI_rast <- (this_tile[['NIR']] - this_tile[['red']]) / (this_tile[['NIR']] + this_tile[['red']] + 0.0001)
+extracted_1m <- subplots_hsi_1m
 
-  NIRv_rast <- this_tile[['NIR']] * NDVI_rast
+extracted_1m_long <- extracted_1m %>%
+  pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
+  left_join(kept_bands) %>%
+  select(cell, cell_easting, cell_northing,
+         plotID, subplotID,
+         band, year, wv, refl) %>%
+  mutate(eventID = paste0(plotID, '_', subplotID, '_', year))
 
-  CCI_rast <- (this_tile[['PRI']] - this_tile[['red']]) / (this_tile[['PRI']] + this_tile[['red']])
+summary_1m <- extracted_1m_long %>%
+  group_by(eventID, wv) %>%
+  summarise(mean_refl = mean(refl))
 
-  indices <- c(CCI_rast, NIRv_rast, PRI_rast)
+#if used buffer and sample more than 1 cell
+#            sd_refl = sd(refl),
+#          se_refl = sd_refl/sqrt(n()),
+#           CV_refl = sd_refl/mean_refl)
 
-  names(indices) <- c("CCI", "NIRv", "PRI")
+summary_1m
 
-  indices_rast <- terra::plotRGB(indices, r=1, g=2, b=3, stretch="lin")
-
-  #export whole tile:
-  terra::writeRaster(indices, filename = paste0('indices_', which_site, '_', which_year, '_', t, '.tif'))
-}
-
-
-
-
-
-#mapping HSI as vegetation indices from scratch
+#code that might be useful: 
+#loading a single file to get relevant metadata; just in case?
 which_site <- 'CPER'
 which_year = 2024
-#loading a single file to get relevant metadata; just in case?
 path = hsi_files_2024[1]
 raw_data <- rhdf5::h5read(hsi_files_2024[1], paste0("/", which_site, "/Reflectance/Reflectance_Data"))
 reordered_data <- aperm(raw_data, c(3, 2, 1)) #make sure rows and columns are properly transposed in this step
