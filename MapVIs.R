@@ -3,11 +3,43 @@
 # MapVIs lets you
 
 # Load saved tiffs of RGB VIs, OR make the map from scratch
-# open and extract necessary info to combine w vegetation
+# extract necessary info to combine w vegetation
 
 
+#from the tile list... grab relevant locations:
+foreach(t = 1:23) %do% {
+  #take the already created raster file: this_tile <- paste0('Users/khuelsma/indices_CPER_2024_', t)
+  # or make it now:
+  this_tile <- CPER_hsi_tile_list[[img]]
+  
+  tile_extent <- ext(this_tile)
+  plots_projected <- terra::project(plots_shp, this_tile) #can also use David's data here
+  plots_in_tile <- plots_projected[tile_extent]
+  
+  #make rasters
+  PRI_rast <- (this_tile[['NIR']] - this_tile[['green']]) / (this_tile[['NIR']] + this_tile[['green']])
+  
+  NDVI_rast <- (this_tile[['NIR']] - this_tile[['red']]) / (this_tile[['NIR']] + this_tile[['red']] + 0.0001)
+  
+  NIRv_rast <- this_tile[['NIR']] * NDVI_rast
+  
+  CCI_rast <- (this_tile[['PRI']] - this_tile[['red']]) / (this_tile[['PRI']] + this_tile[['red']])
+  
+  indices <- c(CCI_rast, NIRv_rast, PRI_rast)
+  
+  names(indices) <- c("CCI", "NIRv", "PRI")
+  
+  indices_rast <- terra::plotRGB(indices, r=1, g=2, b=3, stretch="lin")
+  
+  #export whole tile: terra::writeRaster(indices, filename = paste0('indices_', which_site, '_', which_year, '_', t, '.tif'))
+}
+
+
+
+# Load saved tiffs of RGB VIs -------------------------------------------
 #we can load the VI RGB maps and clip them to subplot / plot sizes
-foreach(t = 1:23) %do% { #length(CPER_hsi_tile_list)) %do% {
+VIs <- foreach(t = 1:23,
+        .combine = rbind) %do% { # or length(CPER_hsi_tile_list)) %do% {
   #load the saved raster and extract polygons:
   filename <- paste0('/Users/khuelsma/indices_', which_site, '_', which_year, '_', t, '.tif')
   VI_rast <- terra::rast(filename)
@@ -43,10 +75,11 @@ foreach(t = 1:23) %do% { #length(CPER_hsi_tile_list)) %do% {
         rename(plotnum = ID) %>%
         mutate(tile = filename) %>%
         left_join(plots_df)
-      
+      return(subplot_metrics)
     }
   }
 }
 
+VIs
 # open and extract necessary info, interpret the data
 
