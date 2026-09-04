@@ -42,7 +42,6 @@ library('foreach')
 
 #can use all_NEON_plots w LL / EN centroids or shapefiles
 all_NEON_plots <- read.csv(file = 'All_NEON_TOS_Plot_Centroids_V11.csv')
-#NEON shape files: choose one to assign to LL; one is plots, one is subplots
 plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
 #CPER plots 
 plots_shp_CPER_plants <- subset(plots_shp, stringr::str_detect(plots_shp$plotID, 'CPER') &
@@ -51,6 +50,7 @@ subplots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/R
 #CPER subplots
 subplot_shp_CPER_plants <- subset(subplots_shp, stringr::str_detect(subplots_shp$plotID, 'CPER') &
                                    'div' %in% subplots_shp$appMods)
+
 #subplot shapes we can use to extract values
 subplot_shp_100 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_100'))
 subplot_shp_10 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_10_'))
@@ -61,7 +61,7 @@ subplot_shp_1 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp
 
 #load file names:
 CPER_2024_files <- read_csv('CPER_filelist_2024.csv')
-#extract rgb vs. hsi
+#lists of rgb (rgb_path) vs. hsi (path) -- created above
 rgb_files_2024 <- CPER_2024_files$rgb_path
 hsi_files_2024 <- CPER_2024_files$path
 
@@ -70,6 +70,7 @@ tilemap_rgb_list <- foreach (img = rgb_files_2024) %do% {
   tilemap <- terra::rast(img)
   #terra::plotRGB(tilemap)
 }
+#full site
 full_site_2024 <-  terra::merge(terra::sprc(tilemap_rgb_list))
 #terra::plotRGB(full_site_2021)
 
@@ -82,15 +83,11 @@ subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% {
   tilemap <- img
   #establish the extent of the rgb tile so you can clip the list of all plots later to just those in the tile
   tile_extent <- terra::ext(tilemap)
-  
   #project subplot shape file to the tile map so we can extract
   subplots_shp_aligned <- terra::project(subplot_shp_1, tilemap)
-  #DA_shp_aligned <- terra::project(poly_vect, tilemap)
-  
   #filter all the subplots to just the ones in the tile's extent
   plots_in_tile <- subplots_shp_aligned[tile_extent]
-  #plots_in_tile <- DA_shp_aligned[tile_extent]
-  
+
   if (nrow(plots_in_tile) > 0) { #as long as there are plots in the tile,
     plot_lookup <- data.frame(
       ID = 1:nrow(plots_in_tile), #we will make a dataframe with plot ID (just a number)
@@ -100,26 +97,42 @@ subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% {
     
     foreach(plot = nrow(plots_in_tile),
             .combine = rbind) %do% {
-              subplot <- plots_in_tile[plot,] #for each plot
+              subplot <- plots_in_tile[plot,] #for each plot, numbered 1 to nrow
               subplot_df <- as.data.frame(subplot)
               subplotID = subplot_df$subplotID
               buffer_pt <- terra::buffer(subplot, width = 2) #buffer so we account for spatial uncertainty?
               cropped_plot <- terra::crop(tilemap, buffer_pt) #crop the map to just the buffered point
               plotRGB(cropped_plot) #plot the cropped plot
-              #terra::plot(buffer_pt, add = TRUE)
             }
-  }
+    }
+}
+
+CPER_1_10 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots1to10.csv')
+class()
+CPER_11_15 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots11to15.csv')
+
+CPER_16_23 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots16to23.csv')
+
+inputs <- c(CPER_1_10,CPER_11_15, CPER_16_23)
+meanrefl <- foreach (input = inputs, #they are objects
+                    .combine = rbind) %do%  { 
+                      inputdf <- as.data.frame(input)
+  print(names(input))
+                    }
+  
+hello <- input %>%
+    group_by(plotID, wv) %>%
+    summarise(meanrefl = mean(refl))
+  hello
+}
+
+meanrefl %>%
+    ggplot(aes(x = wv, y = meanrefl)) +
+    geom_point() +
+    theme_classic()
 }
 
 
-CPER_1_10 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots1to10.csv')
-
-CPER_1_10 %>%
-  group_by(plotID, wv) %>%
-  summarise(meanrefl = mean(refl)) %>%
-  ggplot(aes(x = wv, y = meanrefl)) +
-  geom_point() +
-  theme_classic()
 
 #get the rest of the extracted data
 
@@ -131,62 +144,40 @@ foreach(t = 1:23) %do% { #length(CPER_hsi_tile_list)) %do% {
   tile_extent <- terra::ext(VI_rast)
   plots_projected <- terra::project(subplot_shp_1, VI_rast) #can also use David's data here
   plots_in_tile <- plots_projected[tile_extent]
+  
+  #full tile maps of VIs
   terra::plotRGB(VI_rast, r = 1, g = 2, b = 3, stretch = 'lin')
   terra::plot(plots_in_tile, add = TRUE, lwd = 3, col = 'white')
   
-  #full_tile_VIs <- terra::plotRGB(VI_rast, r = 1, g = 2, b = 3, stretch = 'lin')
-  #terra::plot(plots_in_tile, add = TRUE, lwd = 3, col = 'white')
-  #create a translation between extraction ID and plotID
+  plots_df <- as.data.frame(plots_in_tile)
+  
   # (Added a check in case no plots fall in this tile)
   if (nrow(plots_in_tile) > 0) {
+    #create a translation between extraction ID and plotID
+    plot_lookup <- data.frame(
+      ID = 1:nrow(plots_in_tile),
+      plotID = plots_in_tile$plotID 
+    )
+    
     foreach(p = 1:nrow(plots_in_tile)) %do% {
       this_plot <- plots_in_tile[p,]
+      buffer_pt <- terra::buffer(this_plot, width = 2)
+      
       cropped_plot <- terra::crop(VI_rast, buffer_pt)
+      #mapping
       terra::plotRGB(cropped_plot, r = 1, g = 2, b = 3, stretch = 'lin')
+      
+      #extracting:
+      subplot_metrics <- terra::extract(VI_rast, buffer_pt)
+      subplot_metrics <- subplot_metrics %>%
+        rename(plotnum = ID) %>%
+        mutate(tile = filename) %>%
+        left_join(plots_df)
+      
     }
   }
 }
 
-
-#now going to use subplots:
-hello <- foreach(t = 1:2,
-                 .combine = rbind) %do% { #length(CPER_hsi_tile_list)) %do% {
-                   #load the saved raster and extract polygons:
-                   filename <- paste0('indices_', which_site, '_', which_year, '_', t, '.tif')
-                   VI_rast <- terra::rast(filename)
-                   
-                   tile_extent <- terra::ext(VI_rast)
-                   plots_projected <- terra::project(subplots_shp, VI_rast) #can also use David's data here
-                   plots_in_tile <- plots_projected[tile_extent]
-                   
-                   if (nrow(plots_in_tile) > 0) {
-                     plot_lookup <- data.frame(
-                       ID = 1:nrow(plots_in_tile),
-                       plotID = plots_in_tile$plotID 
-                     )
-                     
-                     plots_df <- as.data.frame(plots_in_tile)
-                     buffer_pt <- terra::buffer(plots_in_tile, width = 2)
-                     cropped_plot <- terra::crop(VI_rast, buffer_pt)
-                     subplot_metrics <- terra::extract(VI_rast, buffer_pt)
-                     subplot_metrics <- subplot_metrics %>%
-                       rename(plotnum = ID) %>%
-                       mutate(tile = filename) %>%
-                       left_join(plots_df)
-                   }
-                 }
-
-
-# (Added a check in case no plots fall in this tile)
-if (nrow(plots_in_tile) > 0) {
-  foreach(p = 1:nrow(plots_in_tile)) %do% {
-    this_plot <- plots_in_tile[p,]
-    buffer_pt <- terra::buffer(this_plot, width = 2)
-    cropped_plot <- terra::crop(VI_rast, buffer_pt)
-    subplot_metrics <- terra::extract(VI_rast, buffer_pt)
-    terra::plotRGB(cropped_plot, r = 1, g = 2, b = 3, stretch = 'lin')
-  }
-}
 
 
 
@@ -258,12 +249,8 @@ foreach(
     
     #export the list here:
     CPER_hsi_tile_list[[paste0(img)]] <- sp_bands_rast
-    #site_tile_list[[paste0(thisfile$year, "_", thisfile$E_tile, "_", thisfile$N_tile)]] <- indices_subset
   }
-#exported the veg indices tiffs w this:
 #from the tile list... grab relevant locations:
-
-
 
 foreach(t = 1:23) %do% {
   #take the raster and extract polygons:
