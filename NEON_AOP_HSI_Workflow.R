@@ -1,44 +1,15 @@
-#This code downloads and previews data from NEON sites:
-
-library('tidyr')
-library('dplyr')
-library('ggplot2')
-library('lubridate')
-library('neonUtilities')    # for NEON API
-library('jsonlite')           # for NEON API
-library('rhdf5')              # reading HDF5 files (AOP data)
-library('sf')                 # spatial data
-library('xml2')             # to extract metadata from shape files
-library('terra')              # raster operations (replaces raster package)
-library('vegan')
-library('mapview')
-
-home <- '/Users/khuelsma/' #"SMCE_dir"
-
-# LOCATION INFO -----------------------------------------------------------
-
-#import shapefiles or lat/lon csv
-all_NEON_plots <- read.csv(file = 'All_NEON_TOS_Plot_Centroids_V11.csv')
-
-#not actually sure how these shape files will cooperate... need to troubleshoot that.
-#NEON shape files: choose one to assign to LL
-#subplots_shp <- sf::st_read('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Subplots_V11.shp')
-#plots_shp <- sf::st_read('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
-pl_centr_shp <- sf::st_read('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Centroids_V11.shp')
-#LL <- plots_shp
-
-#David Augustine's shapefiles for ARID
-#LL_pt <- sf::st_read("/Users/khuelsma/Downloads/VegPoint_2026.shp/VegPOINT_2026.shp")
-#LL_poly <- sf::st_read("/Users/khuelsma/Downloads/VegPolygon2026/VegPolygon2026.shp")
 
 # OTHER DETAILS: SPECTRA --------------------------------------------------
 #Reminder to get USGS Endmembers
-
-# GROUND COVER INFO -------------------------------------------------------
-#NEON veg:
-#neon_veg <- read.csv('NEON_veg_plots_2026.csv')
-#NEON veg subplots:
-#neon_vegsub <- read.csv('NEON_veg_subplots_2026.csv')
+# OTHER DETAILS: SPECTRA --------------------------------------------------
+#Reminder to get USGS Endmembers
+EMs <- read.csv('/Users/khuelsma/Downloads/USGS_grass_endmems.csv')
+#bad bands will have negative reflectance
+EMs %>%
+  filter(refl > 0) %>%
+  ggplot(aes(x = wv_nm, y = refl)) +
+  geom_point(aes(colour = endmem)) +
+  theme_classic()
 
 # David Augustine's data:
 #cover for 48 polygons from a few days in June 2026:
@@ -46,217 +17,7 @@ pl_centr_shp <- sf::st_read('/Users/khuelsma/Desktop/NEON Spectral Variability/R
 #pure shrub and bare soil points and polygons
 #pure_ems <- read.csv('Augustine_Pure_EMs.csv')
 
-#need to check that crs(rgb_raster) and crs(LL) match.
 
-# Downloading data --------------------------------------------------------
-#All of this is only needed if you need to download data; you will need a NEON token to use the API
-setwd(home)
-neon_token <- if (file.exists('NEON_token.txt')) {
-  neon_token <- readLines('neon_token.txt')
-} else {
-  neon_token <- rstudioapi::askForPassword(prompt = 'enter NEON token')
-}
-options(timeout = 3600) #increase timeout to 1 hour
-
-#find and open files
-get_prod_avail <- function(which_site, which_dp, BRDF = FALSE) {
-  
-  ID = case_when(
-    which_dp == 'veg' ~ 'DP1.10058.001', #one and only veg
-    which_dp == 'refl' & BRDF == TRUE ~ 'DP3.30006.002', #BRDF corrected; unusual case?
-    which_dp == 'refl' ~ 'DP3.30006.001') #NOT BRDF corrected
-  
-  Info <- neonUtilities::getProductInfo(dpID = ID) 
-  
-  site_avail <- Info$siteCodes %>% 
-    select(siteCode,availableMonths) %>%
-    group_by(siteCode) %>%
-    filter(siteCode == which_site) %>%
-    reframe(m = unlist(availableMonths)) %>%
-    mutate(date_full = ymd(paste0(m, "-01")), #adds day so lubridate associates w date
-           year = year(date_full),
-           month = month(date_full)
-    ) %>%
-    dplyr::select(siteCode, year) %>%
-    distinct()
-}
-
-#this will tell you which years have both veg + AOP data and whether the AOP data are brdf corrected
-both_avail <- function(which_site) { #default is BRDF = FALSE
-  veg <- get_prod_avail(which_site, 'veg')
-  nonbrdf <- get_prod_avail(which_site, 'refl', BRDF = FALSE) %>%
-    mutate(brdf = 'no')
-  brdf <- get_prod_avail(which_site, 'refl', BRDF = TRUE) %>%
-    mutate(brdf = 'yes')
-  
-  both <- rbind(nonbrdf, brdf) %>%
-    inner_join(veg) %>%
-    as.data.frame()
-}
-
-# function to get all easting and northing values for all tiles at *a site*
-get_site_EN <- function(which_site, 
-                        tiles_only = FALSE) {   #this is for file checking
-  
-  #filter NEON's plot centroids from the repo to site, get unique values
-  plot_polygons <- all_NEON_plots %>% #created above
-    filter(grepl('div', appMods)) %>% #filter to just diversity plots for now
-    filter(siteID == which_site) %>% #filter to the site
-    mutate(
-      #fixes Blandy's 17/18 N border (I think)
-      utmZone_final = ifelse(which_site == 'BLAN', '17N', utmZone),
-      epsg_target = 32600 + as.numeric(gsub("[^0-9]", "", utmZone_final)),
-      E_tile = 1000*floor(easting/1000),
-      N_tile = 1000*floor(northing/1000),
-      crs = unique(epsg_target)
-    ) %>%
-    select(-utmZone)
-  
-  if (which_site == 'LL') {
-    #LL should be loaded above; need to troubleshoot this.
-    
-    plot_polygons <- LL
-  }
-  #if tiles only (for file checking and opening)
-  if (tiles_only == TRUE) {
-    plot_polygons <- plot_polygons %>%
-      distinct(E_tile, N_tile, domainID, crs)
-    return(plot_polygons)
-  }
-  
-  return(plot_polygons)
-}
-
-#just for fun
-check_dims <- function(which_site) {
-  obs <- get_site_EN(which_site) # will give you ALL THE DETAILS of obs plots but also the tiles
-  tiles_fr_obs <- obs %>%
-    distinct(E_tile, N_tile)
-  n_tiles_fr_obs <- dim(tiles_fr_obs)[1]
-  
-  tiles <- get_site_EN(which_site, tiles_only = TRUE) #this will not give you all the details; just tiles
-  n_tiles <- dim(tiles)[1]
-  if (n_tiles_fr_obs != n_tiles) {
-    print('check unique tiles from plots; check n tiles available to download')
-  }
-  if (n_tiles_fr_obs == n_tiles) {
-    print(paste('all', n_tiles_fr_obs, 'tiles have TOS plots :)'))
-  }
-}
-
-check_files_exist <- function(which_site, 
-                              which_year = NULL,
-                              RGB = FALSE, 
-                              download = FALSE) {  
-  
-  site_tiles <- get_site_EN(which_site, tiles_only = TRUE)
-  site_year_combos <- both_avail(which_site) 
-  
-  if(nrow(site_tiles) == 0) {
-    warning("No plots found for site: ", which_site)
-    return(data.frame(site = character(), year = numeric(), path = character()))
-  }
-  
-  # setwd(home) # Make sure 'home' exists in your global environment!
-  
-  if (is.null(which_year)) {
-    years <- unique(site_year_combos$year)
-  } else {
-    years <- which_year
-  }
-  
-  all_files_list <- list()
-  
-  for(i in 1:nrow(site_tiles)) {
-    for (y in seq_along(years)) {
-      
-      which_year <- years[y]
-      year <- which_year
-      cat(sprintf("\nProcessing year: %s\n", which_year))
-      
-      brdf_df <- site_year_combos %>% filter(year == which_year) %>% distinct(brdf)
-      yr_brdf <- unique(brdf_df$brdf)
-      
-      h5_final_path <- NA
-      rgb_final_path <- NA
-      file_found <- FALSE
-      
-      this_tile <- site_tiles[i,]
-      domain = this_tile$domainID
-      easting = this_tile$E_tile
-      northing = this_tile$N_tile
-      DP = ifelse(yr_brdf == 'yes', 'DP3.30006.002', 'DP3.30006.001')
-      
-      for(tile in 1:10) { 
-        # 1. Check H5
-        h5_path <- ifelse(
-          yr_brdf == 'yes', 
-          paste0(home, '/', DP, '/neon-aop-provisional-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', tile, '/L3/Spectrometer/Reflectance/'),
-          paste0(home, '/', DP, '/neon-aop-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', tile, '/L3/Spectrometer/Reflectance/'))
-        
-        h5_base <- paste0('NEON_', domain, '_', which_site, '_DP3_', easting, '_', northing)
-        BRDF_filename_append <- '_bidirectional_reflectance'
-        h5filename <- ifelse(yr_brdf == 'yes', paste0(h5_base, BRDF_filename_append, '.h5'), paste0(h5_base, '_reflectance.h5'))
-        h5_filepath <- paste0(h5_path, h5filename)
-        
-        if(file.exists(h5_filepath)) {
-          if (isTRUE(rhdf5::H5Fis_hdf5(h5_filepath))) {
-            h5_final_path <- h5_filepath
-            file_found <- TRUE
-          } else {
-            warning(paste("\nCorrupted HDF5 file detected (will attempt to re-download):", h5_filepath))
-          }
-        } # <-- This closing bracket was missing!
-        
-        # 2. Check RGB
-        if (RGB == TRUE) {
-          rgb_DP <- 'DP3.30010.001'
-          rgb_path <- paste0(home, '/', rgb_DP, '/neon-aop-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', tile, '/L3/Camera/Mosaic/')
-          rgbfilename <- paste0(year, '_', which_site, '_', tile, '_', easting, '_', northing, '_image.tif')
-          rgb_filepath <- paste0(rgb_path, rgbfilename)
-          
-          if(file.exists(rgb_filepath)) {
-            rgb_final_path <- rgb_filepath
-            # Don't overwrite file_found here to ensure HDF5 triggers download if missing
-          } else {
-            file_found <- FALSE 
-          }
-        }
-        
-        if (file_found == TRUE) break
-      } # 1-10 folder tile loop
-      
-      if (file_found == TRUE) {
-        tile_df <- data.frame(
-          site = which_site, year = which_year, brdf = yr_brdf,
-          E_tile = easting, N_tile = northing, path = h5_final_path,
-          stringsAsFactors = FALSE
-        )
-        if (RGB == TRUE) tile_df$rgb_path <- rgb_final_path
-        all_files_list[[paste0(which_year, "_", easting, "_", northing)]] <- tile_df
-      } 
-      
-      # 3. Download if missing
-      if(!file_found && download) {
-        cat(sprintf("  File not found. Downloading tile: E=%d, N=%d, Year=%s\n", easting, northing, which_year))
-        
-        tryCatch({
-          neonUtilities::byTileAOP(dpID = DP, site = which_site, easting = easting, northing = northing, buffer = 0, check.size = FALSE, include.provisional = TRUE, year = which_year, token = neon_token, progress = TRUE)
-        }, error = function(e) warning("HDF5 Download failed"))
-        
-        if (RGB == TRUE) {
-          tryCatch({
-            # FIX: Explicitly use RGB DP ID here!
-            neonUtilities::byTileAOP(dpID = 'DP3.30010.001', site = which_site, easting = easting, northing = northing, buffer = 0, check.size = FALSE, include.provisional = TRUE, year = which_year, token = neon_token, progress = TRUE)
-          }, error = function(e) warning("RGB Download failed"))
-        }
-      } 
-    } 
-  } 
-  return(do.call(rbind, all_files_list))
-}
-
-#input will be list of site_files (output of check_files_exist)
 extract_tile_plots <- function(input) {
   if(nrow(input) == 0) return(data.frame())
   all_plot_data <- list()
@@ -405,22 +166,75 @@ map_site_tiles <- function(input) {
 
 # Begin Workflow: ---------------------------------------------------------
 
+# load what I already extracted OR 
+CPER_1_10 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots1to10.csv')
+CPER_11_15 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots11to15.csv')
+CPER_16_23 <- readr::read_csv('/Users/khuelsma/CPER_2024_extractedplots16to23.csv')
+
+
+# Choose a site/location and open or request from API to download
 which_site <- 'CPER'
+
+# you will need a NEON token to use the API for this command:
+neon_token <- if (file.exists('NEON_token.txt')) {
+  neon_token <- readLines('neon_token.txt')
+} else {
+  neon_token <- rstudioapi::askForPassword(prompt = 'enter NEON token')
+}
+options(timeout = 3600) #increase timeout to 1 hour
+
+#this gives us a timeline of available data and folder numbers for opening the HSI with a little more control
+both <- both_avail(which_site)
+both$folder = 1:nrow(both)
+
 #set the site, get all plots and associated tiles at the site
 tile_plots <- get_site_EN(which_site, tiles_only = FALSE)
-#get a list of the files (and download them if needed)
-site_files <- check_files_exist(which_site)
-files <- site_files %>% filter(!is.na(path))
 
-#use files as input
+filename <- paste0(which_site, '_filelist_', which_year, '.csv')
+#get a list of the files to open (download them if needed)
+
+#if we have a list of files, open them
+if (file.exists(filename)) {
+  filelist <- read_csv(filename)
+  #create separate lists of rgb (rgb_path) vs. hsi (path) 
+  rgb_files <- filelist$rgb_path
+  hsi_files <- filelist$path
+  
+}
+
+#if we don't, see if we have the files but not the list.
+if (!file.exists(filename)) {
+  #check files exist and make it
+  site_files <- check_files_exist(which_site)
+  filelist <- site_files %>% filter(!is.na(path))
+
+  if (nrow(files) == 0) {
+    print('download data')
+  }
+  
+  if (nrow(files) > 0) {
+  return(site_files)
+  }
+}
+
 #using files list: 1) make maps, 2) extract data:
 maplist <- map_site_tiles(files)
-#somehow save the maplist? 
-
 #save extracted data
 extracted_data <- extract_tile_plots(files)
 write.csv(extracted_data, file = paste0(which_site, '_refl.csv'))
 
+
+#start w rgb tiles: for each list item (file path), create a list of tilemaps to merge
+tilemap_rgb_list <- foreach (img = rgb_files_2024) %do% {
+  tilemap <- terra::rast(img)
+  #terra::plotRGB(tilemap)
+}
+#full site map (where sampling occurred)
+full_site_2024 <-  terra::merge(terra::sprc(tilemap_rgb_list))
+#terra::plotRGB(full_site_2021)
+
+#terra::plot(LL_poly$geometry, add = TRUE)
+#terra::crs(LL_poly)
 
 #make a full site mosaic:
 site_hsi_mosaic <- terra::merge(terra::sprc(maplist))
@@ -428,6 +242,8 @@ plot(site_hsi_mosaic)
 
 # each map needs: a) bandmath and b) plot extraction. and saving as a png at each step.
 maplist
+
+
 
 # 2. Do the band math on the FULL SITE mosaic
 site_ndvi <- (site_hsi_mosaic[["NIR"]] - site_hsi_mosaic[["red"]]) / (site_hsi_mosaic[["NIR"]] + site_hsi_mosaic[["red"]] + 0.0001)
