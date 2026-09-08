@@ -55,42 +55,58 @@ get_prod_avail <- function(which_site, which_dp, BRDF = FALSE) {
     which_dp == 'refl' ~ 'DP3.30006.001') #NOT BRDF corrected
   
   Info <- neonUtilities::getProductInfo(dpID = ID) 
-  
-  site_avail <- Info$siteCodes %>% 
-    select(siteCode,availableMonths) %>%
-    group_by(siteCode) %>%
+  site_avail_data <- Info$siteCodes %>%
     filter(siteCode == which_site) %>%
+    select(siteCode, availableMonths) %>%
+    group_by(siteCode) %>%
     reframe(m = unlist(availableMonths)) %>%
     mutate(date_full = ymd(paste0(m, "-01")), #adds day so lubridate associates w date
            year = year(date_full),
            month = month(date_full)
     ) %>%
-    dplyr::select(siteCode, year, month) %>%
-    distinct()
+    distinct(siteCode, year, month) 
 }
+
+#just spec, just to see if different from both_avail (i.e., no concurrent veg)
+spec_avail <- function(which_site) {
+  
+  nonbrdf <- get_prod_avail(which_site, 'refl', BRDF = FALSE) %>%
+    mutate(brdf = 'no')
+  
+  brdf <- get_prod_avail(which_site, 'refl', BRDF = TRUE) %>%
+    mutate(brdf = 'yes')
+  
+  both <- rbind(nonbrdf, brdf) %>%
+    rename(specmonth = month)
+}
+
+spec_avail('CPER') %>%
+  group_by(year) %>%
+  summarise(minbouts = n_distinct(specmonth))
+
+get_prod_avail('CPER', 'refl', BRDF = FALSE) %>% 
+  group_by(year) %>%
+  summarise(minbouts = n_distinct(month))
 
 #this will tell you which years have both veg + AOP data and whether the AOP data are brdf corrected
 #NOTE: if the NEON API is down it won't work.
 both_avail <- function(which_site) { #default is BRDF = FALSE
   veg <- get_prod_avail(which_site, 'veg')
-  nonbrdf <- get_prod_avail(which_site, 'refl', BRDF = FALSE) %>%
-    mutate(brdf = 'no')
-  brdf <- get_prod_avail(which_site, 'refl', BRDF = TRUE) %>%
-    mutate(brdf = 'yes')
   
-  both <- rbind(nonbrdf, brdf) %>%
-    rename(specmonth = month) %>%
+  both <- spec_avail(which_site) %>%
     left_join(veg, by = c('siteCode', 'year'),
               relationship = 'many-to-many') %>%
     as.data.frame() %>%
     group_by(siteCode, year, specmonth, brdf) %>%
     summarise(vegmos = list(unique(month)))
-  
   return(both)
 }
 
 # Downloading data --------------------------------------------------------
 # function to get all easting and northing values for all tiles at *a site*
+#req's locations of NEON plots from their website:
+#can use all_NEON_plots w LL / EN centroids or shapefiles, both are from NEON's site
+all_NEON_plots <- read.csv(file = 'All_NEON_TOS_Plot_Centroids_V11.csv')
 get_site_EN <- function(which_site, 
                         tiles_only = FALSE) {   #this is for file checking
   
@@ -122,6 +138,7 @@ get_site_EN <- function(which_site,
   
   return(plot_polygons)
 }
+
 #just for fun
 check_dims <- function(which_site) {
   obs <- get_site_EN(which_site) # will give you ALL THE DETAILS of obs plots but also the tiles
@@ -139,234 +156,372 @@ check_dims <- function(which_site) {
   }
 }
 
-check_files_exist <- function(which_site, 
-                              which_year = NULL,
-                              RGB = FALSE, 
-                              download = FALSE) {  
-  
+
+home <- '/Users/khuelsma/'
+avail_file_list('CPER')
+avail_file_list <- function(which_site, 
+                           which_year = NULL,
+                           download = FALSE) {
+  #tiles at the site
   site_tiles <- get_site_EN(which_site, tiles_only = TRUE)
-  #site_year_combos <- both_avail(which_site) 
   
   if(nrow(site_tiles) == 0) {
     warning("No plots found for site: ", which_site)
-    return(data.frame(site = character(), year = numeric(), path = character()))
+    #return(data.frame(site = character(), year = numeric(), path = character()))
+  }
+
+  #years at the site
+  site_year_combos <- both_avail(which_site) 
+  
+  if (nrow(site_year_combos) == 0) {
+    warning('No data found for site: ', which_site)
+    # return(data.frame(siteCode = character(), 
+    #                   year = numeric(), 
+    #                   brdf = character(),
+    #                   folder = cnumeric()))
   }
   
-  # setwd(home) # Make sure 'home' exists in your global environment!
+  #this will give us the number of bouts and therefore number of folders we need to find for each year
+  minbouts <- site_year_combos %>%
+    group_by(year) %>%
+    summarise(minbouts = n_distinct(specmonth))
   
-  if (is.null(which_year)) {
-    years <- unique(site_year_combos$year)
-  } else {
-    years <- which_year
+  site_year_tile_combos <- site_year_combos %>%
+    left_join(minbouts) %>%
+    cross_join(site_tiles) %>%
+    rename(which_site = siteCode, 
+           easting = E_tile, 
+           northing = N_tile, 
+           domain = domainID) %>%
+    mutate(DP = ifelse(brdf == 'yes', 'DP3.30006.002', 'DP3.30006.001'),
+           rgb_DP = 'DP3.30010.001') %>%
+    select(which_site, year, minbouts, DP, brdf, easting, northing, domain, crs, rgb_DP)
+  
+  if (!is.null(which_year)) {
+    site_year_tile_combos <- site_year_tile_combos %>%
+      filter(year == which_year)
+  } else { #all years
+    site_year_tile_combos
   }
-  
-  all_files_list <- list()
-  
-  for(i in 1:nrow(site_tiles)) {
-    for (y in seq_along(years)) {
-      
-      which_year <- years[y]
-      year <- which_year
-      cat(sprintf("\nProcessing year: %s\n", which_year))
-      
-      #brdf_df <- site_year_combos %>% filter(year == which_year) %>% distinct(brdf)
-      #yr_brdf <- unique(brdf_df$brdf)
-      #set manually because the API is down
-      yr_brdf = 'yes'
-      
-      h5_final_path <- NA
-      rgb_final_path <- NA
-      file_found <- FALSE
-      
-      this_tile <- site_tiles[i,]
-      domain = this_tile$domainID
-      easting = this_tile$E_tile
-      northing = this_tile$N_tile
-      DP = ifelse(yr_brdf == 'yes', 'DP3.30006.002', 'DP3.30006.001')
-      
-      
-      for(tile in 1:10) { 
-        # 1. Check H5
+  #go thru each avail site file and see if we have it and can open it
+  foreach(
+    #for each row in site_year_tile_combos
+    TYrow = 1:nrow(site_year_tile_combos),
+    .combine = rbind
+  ) %do% {
+    tile_year_base <- site_year_tile_combos[TYrow,] %>%
+      mutate(h5_filepath = NA,
+             rgb_filepath = NA)
+    rgb_DP = tile_year_base$rgb_DP
+    DP = tile_year_base$DP
+    year = tile_year_base$year 
+    domain = tile_year_base$domain
+    brdf = tile_year_base$brdf
+    easting = tile_year_base$easting
+    northing = tile_year_base$northing
+    
+    h5_base = paste0('NEON_', domain, '_', which_site, '_DP3_', easting, '_', northing)
+    BRDF_filename_append = '_bidirectional_reflectance'
+    h5filename = ifelse(brdf == 'yes', paste0(h5_base, BRDF_filename_append, '.h5'), paste0(h5_base, '_reflectance.h5'))
+    
+    # INNER LOOP
+    found_tiles <- foreach(
+      folder = 1:10, 
+      .combine = rbind) %do% {
+        
+        # Make a fresh copy for this specific folder iteration
+        current_tile <- tile_year_base 
         h5_path <- ifelse(
-          yr_brdf == 'yes', 
-          paste0(home, DP, '/neon-aop-provisional-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', tile, '/L3/Spectrometer/Reflectance/'),
-          paste0(home, DP, '/neon-aop-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', tile, '/L3/Spectrometer/Reflectance/'))
-        
-        h5_base <- paste0('NEON_', domain, '_', which_site, '_DP3_', easting, '_', northing)
-        BRDF_filename_append <- '_bidirectional_reflectance'
-        h5filename <- ifelse(yr_brdf == 'yes', paste0(h5_base, BRDF_filename_append, '.h5'), paste0(h5_base, '_reflectance.h5'))
-        h5_filepath <- paste0(h5_path, h5filename)
-        
-        if(file.exists(h5_filepath)) {
-          if (isTRUE(rhdf5::H5Fis_hdf5(h5_filepath))) {
-            h5_final_path <- h5_filepath
-            file_found <- TRUE
-          } else {
-            warning(paste("\nCorrupted HDF5 file detected (will attempt to re-download):", h5_filepath))
-          }
-        } 
-        # 2. Check RGB
-        if (RGB == TRUE) {
-          rgb_DP <- 'DP3.30010.001'
-          rgb_path <- paste0(home, rgb_DP, '/neon-aop-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', tile, '/L3/Camera/Mosaic/')
-          rgbfilename <- paste0(year, '_', which_site, '_', tile, '_', easting, '_', northing, '_image.tif')
-          rgb_filepath <- paste0(rgb_path, rgbfilename)
-          
-          if(file.exists(rgb_filepath)) {
-            rgb_final_path <- rgb_filepath
-            # Don't overwrite file_found here to ensure HDF5 triggers download if missing
-          } else {
-            file_found <- FALSE 
-          }
-        }
-        
-        if (file_found == TRUE) break
-      } # 1-10 folder tile loop
-      
-      if (file_found == TRUE) {
-        tile_df <- data.frame(
-          site = which_site, year = which_year, brdf = yr_brdf,
-          E_tile = easting, N_tile = northing, path = h5_final_path,
-          stringsAsFactors = FALSE
+          brdf == 'yes', 
+          paste0(home, DP, '/neon-aop-provisional-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', folder, '/L3/Spectrometer/Reflectance/'),
+          paste0(home, DP, '/neon-aop-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', folder, '/L3/Spectrometer/Reflectance/')
         )
-        if (RGB == TRUE) tile_df$rgb_path <- rgb_final_path
-        all_files_list[[paste0(which_year, "_", easting, "_", northing)]] <- tile_df
-      } 
-      
-      # 3. Download if missing
-      if(!file_found && download) {
-        cat(sprintf("  File not found. Downloading tile: E=%d, N=%d, Year=%s\n", easting, northing, which_year))
+        h5_filepath = paste0(h5_path, h5filename)
         
+        # 1. If file exists
+        if (file.exists(h5_filepath)) {
+          
+          # safe read using tryCatch
+          file_is_readable <- tryCatch({
+            md1 <- rhdf5::h5readAttributes(h5_filepath, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
+            TRUE
+          }, error = function(e) {
+            warning(paste("\nSkipping corrupted or inaccessible file:", h5_filepath))
+            rhdf5::h5closeAll()
+            FALSE
+          })
+          
+          # 2. If file is readable
+          if (file_is_readable) { 
+            current_tile$h5_filepath <- h5_filepath
+            
+            rgb_path = paste0(home, rgb_DP, '/neon-aop-products/', year, '/FullSite/', domain, '/', year, '_', which_site, '_', folder, '/L3/Camera/Mosaic/')
+            rgbfilename = paste0(year, '_', which_site, '_', folder, '_', easting, '_', northing, '_image.tif')
+            rgb_filepath_full = paste0(rgb_path, rgbfilename)
+            
+            # 3. Check RGB file
+            if (file.exists(rgb_filepath_full)) {
+              current_tile$rgb_filepath <- rgb_filepath_full
+            } else { 
+              current_tile$rgb_filepath <- NA
+              print('download needed')
+            }
+            
+            return(current_tile) # Return this valid row to rbind
+            
+          } else {
+            return(NULL) # Unreadable, skip appending
+          }
+        } else {
+          return(NULL) # Doesn't exist, skip appending
+        }
+      } # end inner foreach from folders
+    
+    # Return whatever valid rows were found for this tile/year
+    found_tiles 
+  } #each tile year
+}
+
+    
+    tile_year_boutsfound <- tile_year %>%
+      group_by(year, easting, northing, minbouts) %>%
+      summarise(nboutsfound = n_distinct(h5_filepath)) %>%
+      distinct(year, minbouts, nboutsfound)
+      
+    tile_year
+    
+    #if we've made it this far and we don't have files, we should download them:
+    if (tile_year_boutsfound$nboutsfound < tile_year_boutsfound$minbouts)  {
+      print('need more bout files')
+      
+      if (download == TRUE) {
+        
+        setwd(home)
+        
+        cat(sprintf("  File not found. Downloading tile: E=%d, N=%d, Year=%s\n", easting, northing, year))
+        #download the hdf5 file:
         tryCatch({
-          neonUtilities::byTileAOP(dpID = DP, site = which_site, easting = easting, northing = northing, buffer = 0, check.size = FALSE, include.provisional = TRUE, year = which_year, token = neon_token, progress = TRUE)
+          
+          #year, easting, northing, DP, 
+          
+          neonUtilities::byTileAOP(dpID = DP, 
+                                   site = which_site, 
+                                   easting = easting, 
+                                   northing = northing, 
+                                   buffer = 0, 
+                                   check.size = FALSE, 
+                                   include.provisional = TRUE, 
+                                   year = year, 
+                                   token = neon_token, progress = TRUE)
         }, error = function(e) warning("HDF5 Download failed"))
         
-        if (RGB == TRUE) {
+        if (is.na(rgbfiles)) {
+          
+          setwd(home)
+          
           tryCatch({
             # FIX: Explicitly use RGB DP ID here!
-            neonUtilities::byTileAOP(dpID = 'DP3.30010.001', site = which_site, easting = easting, northing = northing, buffer = 0, check.size = FALSE, include.provisional = TRUE, year = which_year, token = neon_token, progress = TRUE)
+            neonUtilities::byTileAOP(dpID = rgb_DP,
+                                     site = which_site, 
+                                     easting = easting, 
+                                     northing = northing, 
+                                     buffer = 0, check.size = FALSE, 
+                                     include.provisional = TRUE, 
+                                     year = year, 
+                                     token = neon_token, 
+                                     progress = TRUE)
           }, error = function(e) warning("RGB Download failed"))
         }
-      } 
-    } 
-  } 
-  return(do.call(rbind, all_files_list))
+        
+      } #download = TRUE
+    } #if lacking bouts
+
+    } #each tile-year
 }
+
+avail_site_files <- avail_file_list('CPER', 2024)
 
 #hyperspectral: this creates a list of hyperspectral raster or special band rasters of each tile
-CPER_spbands_tile_list <- c()
-CPER_hsi_tile_list <- c()
+#using input of a tile list
 
-#I think this code is the one that doesn't work well?
-extract_tile_plots <- function(input) {
-  if(nrow(input) == 0) return(data.frame())
-  all_plot_data <- list()
+home <- '/Users/khuelsma/'
+#map_site_tiles will return a dataframe that gives you easy to open .tifs of full tiles: 
+# hsi, special bands, and rgb
+map_site_tiles <- function(which_site, which_year = NULL, download = FALSE, output_dir = home) {
   
-  for (f in 1:nrow(input)) {
-    thisfile <- input[f,] #this file
+  # 0. Create output directory if it doesn't exist
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  # 1. Get the dataframe of available files
+  input <- avail_file_list(which_site, which_year, download)
+  
+  if(nrow(input) == 0) {
+    warning("No valid files found in avail_file_list.")
+    return(input)
+  }
+  
+  # 2. Iterate through rows, process rasters, SAVE to disk, and return paths
+  input_with_paths <- foreach(
+    img = 1:nrow(input), 
+    .combine = rbind) %do% {
     
-    # Safe read to avoid crashes from corrupted files
-    file_is_readable <- tryCatch({
-      md1 <- rhdf5::h5readAttributes(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-      TRUE
-    }, error = function(e) {
-      warning(paste("\nSkipping corrupted or inaccessible file:", thisfile$path))
-      rhdf5::h5closeAll()
-      FALSE
-    })
+    this_row <- input[img,]
+    path <- this_row$h5_filepath
+    easting <- this_row$easting
+    northing <- this_row$northing
     
-    if (!file_is_readable) next
+    # Initialize output paths as NA
+    hsi_out_path <- NA
+    sp_out_path <- NA
     
-    md2 <- rhdf5::h5readAttributes(thisfile$path, paste0('/', which_site, '/Reflectance'))
-    wv <- rhdf5::h5read(thisfile$path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
+    # --- LOAD H5 (HSI & SP BANDS) ---
+    if (!is.na(path) && file.exists(path)) {
+      
+      # Define what the saved filenames should be
+      hsi_target_file <- paste0(output_dir, which_site, "_", which_year, "_", easting, "_", northing, "_HSI.tif")
+      sp_target_file <- paste0(output_dir, which_site, "_", which_year, "_", easting, "_", northing, "_SpBands.tif")
+      
+      # Check if we already processed this tile previously
+      if (file.exists(hsi_target_file) && file.exists(sp_target_file)) {
+        print(paste("Files exist, saving paths for tile:", easting, northing))
+        hsi_out_path <- hsi_target_file
+        sp_out_path <- sp_target_file
+      } else { #if the tifs don't exist yet, make them:
+        
+        # Safe read to avoid crashes from corrupted files
+        file_is_readable <- tryCatch({
+          md1 <- rhdf5::h5readAttributes(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
+          TRUE
+        }, error = function(e) {
+          warning(paste("\nSkipping corrupted or inaccessible file:", path))
+          rhdf5::h5closeAll()
+          FALSE
+        })
+        
+        if (file_is_readable) {
+          
+          md2 <- rhdf5::h5readAttributes(path, paste0('/', which_site, '/Reflectance'))
+          wv <- rhdf5::h5read(path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
+          omit_windows <- data.frame(
+            omit_1_0 = md2$Band_Window_1_Nanometers[1], omit_1_f = md2$Band_Window_1_Nanometers[2],
+            omit_2_0 = md2$Band_Window_2_Nanometers[1], omit_2_f = md2$Band_Window_2_Nanometers[2]
+          )
+          
+          # put metadata into wv df
+          file_wv_df <- data.frame(year = as.numeric(which_year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
+            mutate(
+              omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
+              keep_band = (wv > 450) & (wv < 2150),
+              data_ignore = md1$Data_Ignore_Value, 
+              SF = md1$Scale_Factor,
+              special_band = case_when(
+                wv == wv[which.min(abs(wv - 630))] ~ 'red', 
+                wv == wv[which.min(abs(wv - 800))] ~ 'NIR',
+                wv == wv[which.min(abs(wv - 570))] ~ 'green', 
+                wv == wv[which.min(abs(wv - 480))] ~ 'blue',
+                wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
+              ))
+          
+          kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
+          
+          raw_data <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
+          reordered_data <- aperm(raw_data, c(3, 2, 1))
+          epsg_code <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/EPSG Code"))
+          map_info <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
+          
+          map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
+          map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5])
+          E_min <- map_easting
+          E_max <- map_easting + 1000
+          N_min <- map_northing - 1000
+          N_max <- map_northing
+          
+          hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', epsg_code))
+          
+          # Clean up big raw array immediately
+          rm(raw_data, reordered_data)
+          gc() 
+          
+          # set extent and names of raster
+          terra::ext(hsi_rast_raw) <- c(E_min, E_max, N_min, N_max)
+          names(hsi_rast_raw) <- file_wv_df$band
+          
+          # clean raster: remove atmospheric absorption windows; ignore values; divide by SF
+          hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
+          hsi_rast_ignore <- terra::subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
+          hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
+          
+          # special bands raster
+          sp_bands_rast <- hsi_rast[[!is.na(kept_bands$special_band)]]
+          names(sp_bands_rast) <- unique(kept_bands$special_band[!is.na(kept_bands$special_band)])
+          
+          # --- SAVE RASTERS TO DISK ---
+          print(paste("Writing TIFs for tile:", easting, northing))
+          terra::writeRaster(hsi_rast, hsi_target_file, overwrite = TRUE)
+          terra::writeRaster(sp_bands_rast, sp_target_file, overwrite = TRUE)
+          
+          # Record the successful paths
+          hsi_out_path <- hsi_target_file
+          sp_out_path <- sp_target_file
+          
+          
+          # Clean up raster memory from this iteration
+          rm(hsi_rast_raw, hsi_rast_keep, hsi_rast_ignore, hsi_rast, sp_bands_rast)
+          gc()
+          rhdf5::h5closeAll()
+          
+        } # end if file is readable
+      } # end if file exists check
+    } # end if H5 path is valid
     
-    omit_windows <- data.frame(
-      omit_1_0 = md2$Band_Window_1_Nanometers[1], omit_1_f = md2$Band_Window_1_Nanometers[2],
-      omit_2_0 = md2$Band_Window_2_Nanometers[1], omit_2_f = md2$Band_Window_2_Nanometers[2]
+    # Return a 1-row data frame with the paths for this specific iteration
+    saved_paths <-   data.frame(
+      hsi_saved_path = hsi_out_path, 
+      spbands_saved_path = sp_out_path, 
+      stringsAsFactors = FALSE
     )
     
-    file_wv_df <- data.frame(year = as.numeric(thisfile$year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
-      mutate(
-        omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
-        keep_band = (wv > 450) & (wv < 2150),
-        data_ignore = md1$Data_Ignore_Value, SF = md1$Scale_Factor
-      )
-    kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
+    cbind(this_row, saved_paths)
     
-    raw_data <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-    reordered_data <- aperm(raw_data, c(2, 3, 1))
-    
-    map_info <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-    site_crs <- unique(site_tiles$crs)
-    hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', site_crs))
-    
-    map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-    map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5]) #which is NOT the same as naming convention
-    
-    E_min <- map_easting
-    E_max <- map_easting + 1000
-    N_min <- map_northing - 1000
-    N_max <- map_northing
-    
-    terra::ext(hsi_rast_raw) <- c(E_min, 
-                                  E_max,
-                                  N_min, 
-                                  N_max)
-    names(hsi_rast_raw) <- file_wv_df$band
-    
-    #clean raster
-    hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
-    hsi_rast_ignore <- subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
-    hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)     
-    
-    thisfile_plots <- tile_plots %>% #created above
-      filter(E_tile == thisfile$E_tile & N_tile == thisfile$N_tile)
-    
-    if (nrow(thisfile_plots) > 0) {
-      for (t in 1:nrow(thisfile_plots)) {
-        thisplot <- thisfile_plots[t,]
-        thisplot_vect <- vect(thisplot, geom = c('easting', 'northing'), crs = crs(hsi_rast))
-        square_plot <- as.polygons(ext(buffer(thisplot_vect, width = 10)))
-        extracted_plot_data <- crop(hsi_rast, terra::ext(square_plot))
-        
-        extracted_df <- terra::as.data.frame(extracted_plot_data, xy = TRUE, cells = TRUE)
-        rc <- terra::rowColFromCell(extracted_plot_data, extracted_df$cell)
-        
-        extracted_plot_df <- extracted_df %>%
-          mutate(sample_row = rc[,1], sample_col = rc[,2], plotID = thisplot$plotID) %>%
-          pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
-          left_join(kept_bands, by = "band") %>%
-          left_join(thisplot %>% select(-any_of("year")), by = "plotID")
-        
-        all_plot_data[[paste0(thisplot$plotID, "_", thisfile$year, "_", f)]] <- extracted_plot_df
-      }
-    }
-  } 
-  rhdf5::h5closeAll()
-  return(dplyr::bind_rows(all_plot_data))
+    } #each row 
+  
+  return(input_with_paths)
 }
 
-map_site_tiles <- function(input) {
-  if(nrow(input) == 0) return(list())
-  
-  site_tile_list <- list()
-  
-  for (f in 1:nrow(input)) {
-    thisfile <- input[f,]
-    
-    file_is_readable <- tryCatch({
-      md1 <- rhdf5::h5readAttributes(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-      TRUE
-    }, error = function(e) {
-      warning(paste("\nSkipping corrupted or inaccessible file:", thisfile$path))
-      rhdf5::h5closeAll()
-      FALSE
-    })
-    
-    if (!file_is_readable) next
-    
+CPER_2024 <- map_site_tiles('CPER', 2024)
+
+
+que[1,]$rgb_filepath
+que[1,]$h5_filepath
+
+this_file <- que[1,]$spbands_saved_path
+this_tile <- terra::rast(this_file)
+
+PRI_rast <- (this_tile[['NIR']] - this_tile[['green']]) / (this_tile[['NIR']] + this_tile[['green']])
+
+NDVI_rast <- (this_tile[['NIR']] - this_tile[['red']]) / (this_tile[['NIR']] + this_tile[['red']] + 0.0001)
+
+NIRv_rast <- this_tile[['NIR']] * NDVI_rast
+
+CCI_rast <- (this_tile[['PRI']] - this_tile[['red']]) / (this_tile[['PRI']] + this_tile[['red']])
+
+indices <- c(CCI_rast, NIRv_rast, PRI_rast)
+
+names(indices) <- c("CCI", "NIRv", "PRI")
+
+indices_rast <- terra::plotRGB(indices, r=1, g=2, b=3, stretch="lin")
+
+#so then, you can open each tiff, extract plots, and pair w vegetation
+
+#open each tiff and extract AND MAP plots: 
+
+#pair w veg
+
+map_site_tiles
+
     wv <- rhdf5::h5read(thisfile$path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
-    
     file_wv_df <- data.frame(wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
       mutate(
         data_ignore = md1$Data_Ignore_Value, SF = md1$Scale_Factor,
@@ -376,116 +531,9 @@ map_site_tiles <- function(input) {
           wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
         )
       )
-    
     special_bands <- file_wv_df %>% filter(!is.na(special_band)) %>% distinct()
-    
-    raw_data <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-    reordered_data <- aperm(raw_data, c(2, 3, 1))
-    
-    map_info <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-    site_crs <- unique(site_tiles$crs)
-    hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', site_crs))
-    
-    map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-    map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5])
-    terra::ext(hsi_rast_raw) <- c(map_easting, map_easting + 1000, map_northing - 1000, map_northing)
-    names(hsi_rast_raw) <- file_wv_df$band
-    
-    hsi_rast_keep <- hsi_rast_raw[[unique(special_bands$band)]] 
-    hsi_rast_ignore <- subst(hsi_rast_keep, unique(special_bands$data_ignore), NA) 
-    indices_subset <- hsi_rast_ignore / unique(special_bands$SF)     
-    
-    names(indices_subset) <- special_bands$special_band
-    site_tile_list[[paste0(thisfile$year, "_", thisfile$E_tile, "_", thisfile$N_tile)]] <- indices_subset
-  } 
-  rhdf5::h5closeAll()
-  return(site_tile_list)
-}
 
-
-input <- hsi_files_2024
-foreach( 
-  img = 1:length(input)) %do% {
     
-    path <- input[[img]]
-    
-    # Safe read to avoid crashes from corrupted files
-    file_is_readable <- tryCatch({
-      md1 <- rhdf5::h5readAttributes(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-      TRUE
-    }, error = function(e) {
-      warning(paste("\nSkipping corrupted or inaccessible file:", path))
-      rhdf5::h5closeAll()
-      FALSE
-    })
-    #if the file isn't readable go to the next one; if it is, it will continue.
-    if (!file_is_readable) next
-    
-    if (file_is_readable) {
-      
-      md2 <- rhdf5::h5readAttributes(path, paste0('/', which_site, '/Reflectance'))
-      wv <- rhdf5::h5read(path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
-      omit_windows <- data.frame(
-        omit_1_0 = md2$Band_Window_1_Nanometers[1], omit_1_f = md2$Band_Window_1_Nanometers[2],
-        omit_2_0 = md2$Band_Window_2_Nanometers[1], omit_2_f = md2$Band_Window_2_Nanometers[2]
-      )
-      #put metadata into wv df
-      file_wv_df <- data.frame(year = as.numeric(which_year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
-        mutate(
-          omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
-          keep_band = (wv > 450) & (wv < 2150),
-          data_ignore = md1$Data_Ignore_Value, 
-          SF = md1$Scale_Factor,
-          special_band = case_when(
-            wv == wv[which.min(abs(wv - 630))] ~ 'red', 
-            wv == wv[which.min(abs(wv - 800))] ~ 'NIR',
-            wv == wv[which.min(abs(wv - 570))] ~ 'green', 
-            wv == wv[which.min(abs(wv - 480))] ~ 'blue',
-            wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
-          ))
-      
-      kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
-      
-      raw_data <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-      reordered_data <- aperm(raw_data, c(3, 2, 1)) #make sure rows and columns are properly transposed in this step
-      epsg_code <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/EPSG Code"))
-      map_info <- rhdf5::h5read(path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-      map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-      map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5]) #which is NOT the same as naming convention
-      E_min <- map_easting
-      E_max <- map_easting + 1000
-      N_min <- map_northing - 1000
-      N_max <- map_northing
-      
-      hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', epsg_code))
-      #once a raster is made from raw data, clean up big df's to save memory:
-      rm(raw_data, reordered_data)
-      gc() # Force garbage collection
-      
-      #set extent and names of raster:
-      terra::ext(hsi_rast_raw) <- c(E_min, 
-                                    E_max,
-                                    N_min, 
-                                    N_max)
-      names(hsi_rast_raw) <- file_wv_df$band
-      #clean raster: remove atmospheric absorption windows; ignore values; divide by scale factor
-      hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
-      hsi_rast_ignore <- terra::subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
-      hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
-      #export the list of regular rasters here:
-      CPER_hsi_tile_list[[paste0(img)]] <- hsi_rast
-      
-      # ^this is the raster with ALL the reflectances in it, which should be used for extracting.
-      
-      # special bands raster:
-      sp_bands_rast <- hsi_rast[[!is.na(kept_bands$special_band)]]
-      names(sp_bands_rast) <- unique(kept_bands$special_band[!is.na(kept_bands$special_band)])
-      #export the list of special band rasters here:
-      CPER_spbands_tile_list[[paste0(img)]] <- sp_bands_rast
-    }
-  }
-
-#RGB: 
 
 
 #pulling out subplots from RGB imagery
@@ -524,9 +572,7 @@ subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% {
 #     Save summaries and HSI map
 #output is summary and map list
 # location info for plots:
-#can use all_NEON_plots w LL / EN centroids or shapefiles, both are from NEON's site
-all_NEON_plots <- read.csv(file = 'All_NEON_TOS_Plot_Centroids_V11.csv')
-plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
+
 #CPER plots 
 plots_shp_CPER_plants <- subset(plots_shp, stringr::str_detect(plots_shp$plotID, 'CPER') &
                                   'div' %in% plots_shp$appMods)
@@ -601,6 +647,7 @@ summary_1m %>%
   ggplot(aes(x = wv, y = mean_refl)) +
   geom_point()
 
+plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
 
 
 
@@ -643,5 +690,24 @@ subplots_shp_aligned <- terra::project(subplot_shp_1, hsi_rast) #can adjust to a
 
 
 
+# Extra code --------------------------------------------------------------
 
+
+#I think this code is the one that doesn't work well but might have useful content
+extract_tile_plots <- function(input) {
+  if(nrow(input) == 0) return(data.frame())
+  all_plot_data <- list()
+  square_plot <- as.polygons(ext(buffer(thisplot_vect, width = 10)))
+  extracted_plot_data <- crop(hsi_rast, terra::ext(square_plot))
+  
+  extracted_df <- terra::as.data.frame(extracted_plot_data, xy = TRUE, cells = TRUE)
+  rc <- terra::rowColFromCell(extracted_plot_data, extracted_df$cell)
+  
+  extracted_plot_df <- extracted_df %>%
+    mutate(sample_row = rc[,1], sample_col = rc[,2], plotID = thisplot$plotID) %>%
+    pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
+    left_join(kept_bands, by = "band") %>%
+    left_join(thisplot %>% select(-any_of("year")), by = "plotID")
+  
+  all_plot_data[[paste0(thisplot$plotID, "_", thisfile$year, "_", f)]] <- extracted_plot_df
 
