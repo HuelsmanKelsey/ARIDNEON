@@ -18,149 +18,6 @@ EMs %>%
 #pure_ems <- read.csv('Augustine_Pure_EMs.csv')
 
 
-extract_tile_plots <- function(input) {
-  if(nrow(input) == 0) return(data.frame())
-  all_plot_data <- list()
-  
-  for (f in 1:nrow(input)) {
-    thisfile <- input[f,] #this file
-    
-    # Safe read to avoid crashes from corrupted files
-    file_is_readable <- tryCatch({
-      md1 <- rhdf5::h5readAttributes(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-      TRUE
-    }, error = function(e) {
-      warning(paste("\nSkipping corrupted or inaccessible file:", thisfile$path))
-      rhdf5::h5closeAll()
-      FALSE
-    })
-    
-    if (!file_is_readable) next
-    
-    md2 <- rhdf5::h5readAttributes(thisfile$path, paste0('/', which_site, '/Reflectance'))
-    wv <- rhdf5::h5read(thisfile$path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
-    
-    omit_windows <- data.frame(
-      omit_1_0 = md2$Band_Window_1_Nanometers[1], omit_1_f = md2$Band_Window_1_Nanometers[2],
-      omit_2_0 = md2$Band_Window_2_Nanometers[1], omit_2_f = md2$Band_Window_2_Nanometers[2]
-    )
-    
-    file_wv_df <- data.frame(year = as.numeric(thisfile$year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
-      mutate(
-        omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
-        keep_band = (wv > 450) & (wv < 2150),
-        data_ignore = md1$Data_Ignore_Value, SF = md1$Scale_Factor
-      )
-    kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
-    
-    raw_data <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-    reordered_data <- aperm(raw_data, c(2, 3, 1))
-    
-    map_info <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-    site_crs <- unique(site_tiles$crs)
-    hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', site_crs))
-    
-    map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-    map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5]) #which is NOT the same as naming convention
-    
-    E_min <- map_easting
-    E_max <- map_easting + 1000
-    N_min <- map_northing - 1000
-    N_max <- map_northing
-    
-    terra::ext(hsi_rast_raw) <- c(E_min, 
-                                  E_max,
-                                  N_min, 
-                                  N_max)
-    names(hsi_rast_raw) <- file_wv_df$band
-    
-    #clean raster
-    hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
-    hsi_rast_ignore <- subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
-    hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)     
-    
-    thisfile_plots <- tile_plots %>% #created above
-      filter(E_tile == thisfile$E_tile & N_tile == thisfile$N_tile)
-    
-    if (nrow(thisfile_plots) > 0) {
-      for (t in 1:nrow(thisfile_plots)) {
-        thisplot <- thisfile_plots[t,]
-        thisplot_vect <- vect(thisplot, geom = c('easting', 'northing'), crs = crs(hsi_rast))
-        square_plot <- as.polygons(ext(buffer(thisplot_vect, width = 10)))
-        extracted_plot_data <- crop(hsi_rast, terra::ext(square_plot))
-        
-        extracted_df <- terra::as.data.frame(extracted_plot_data, xy = TRUE, cells = TRUE)
-        rc <- terra::rowColFromCell(extracted_plot_data, extracted_df$cell)
-        
-        extracted_plot_df <- extracted_df %>%
-          mutate(sample_row = rc[,1], sample_col = rc[,2], plotID = thisplot$plotID) %>%
-          pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
-          left_join(kept_bands, by = "band") %>%
-          left_join(thisplot %>% select(-any_of("year")), by = "plotID")
-        
-        all_plot_data[[paste0(thisplot$plotID, "_", thisfile$year, "_", f)]] <- extracted_plot_df
-      }
-    }
-  } 
-  rhdf5::h5closeAll()
-  return(dplyr::bind_rows(all_plot_data))
-}
-
-map_site_tiles <- function(input) {
-  if(nrow(input) == 0) return(list())
-  
-  site_tile_list <- list()
-  
-  for (f in 1:nrow(input)) {
-    thisfile <- input[f,]
-    
-    file_is_readable <- tryCatch({
-      md1 <- rhdf5::h5readAttributes(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-      TRUE
-    }, error = function(e) {
-      warning(paste("\nSkipping corrupted or inaccessible file:", thisfile$path))
-      rhdf5::h5closeAll()
-      FALSE
-    })
-    
-    if (!file_is_readable) next
-    
-    wv <- rhdf5::h5read(thisfile$path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
-    
-    file_wv_df <- data.frame(wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
-      mutate(
-        data_ignore = md1$Data_Ignore_Value, SF = md1$Scale_Factor,
-        special_band = case_when(
-          wv == wv[which.min(abs(wv - 630))] ~ 'red', wv == wv[which.min(abs(wv - 800))] ~ 'NIR',
-          wv == wv[which.min(abs(wv - 570))] ~ 'green', wv == wv[which.min(abs(wv - 480))] ~ 'blue',
-          wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
-        )
-      )
-    
-    special_bands <- file_wv_df %>% filter(!is.na(special_band)) %>% distinct()
-    
-    raw_data <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-    reordered_data <- aperm(raw_data, c(2, 3, 1))
-    
-    map_info <- rhdf5::h5read(thisfile$path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-    site_crs <- unique(site_tiles$crs)
-    hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', site_crs))
-    
-    map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-    map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5])
-    terra::ext(hsi_rast_raw) <- c(map_easting, map_easting + 1000, map_northing - 1000, map_northing)
-    names(hsi_rast_raw) <- file_wv_df$band
-    
-    hsi_rast_keep <- hsi_rast_raw[[unique(special_bands$band)]] 
-    hsi_rast_ignore <- subst(hsi_rast_keep, unique(special_bands$data_ignore), NA) 
-    indices_subset <- hsi_rast_ignore / unique(special_bands$SF)     
-    
-    names(indices_subset) <- special_bands$special_band
-    site_tile_list[[paste0(thisfile$year, "_", thisfile$E_tile, "_", thisfile$N_tile)]] <- indices_subset
-  } 
-  rhdf5::h5closeAll()
-  return(site_tile_list)
-}
 
 
 
@@ -182,40 +39,6 @@ neon_token <- if (file.exists('NEON_token.txt')) {
   neon_token <- rstudioapi::askForPassword(prompt = 'enter NEON token')
 }
 options(timeout = 3600) #increase timeout to 1 hour
-
-#this gives us a timeline of available data and folder numbers for opening the HSI with a little more control
-both <- both_avail(which_site)
-both$folder = 1:nrow(both)
-
-#set the site, get all plots and associated tiles at the site
-tile_plots <- get_site_EN(which_site, tiles_only = FALSE)
-
-filename <- paste0(which_site, '_filelist_', which_year, '.csv')
-#get a list of the files to open (download them if needed)
-
-#if we have a list of files, open them
-if (file.exists(filename)) {
-  filelist <- read_csv(filename)
-  #create separate lists of rgb (rgb_path) vs. hsi (path) 
-  rgb_files <- filelist$rgb_path
-  hsi_files <- filelist$path
-  
-}
-
-#if we don't, see if we have the files but not the list.
-if (!file.exists(filename)) {
-  #check files exist and make it
-  site_files <- check_files_exist(which_site)
-  filelist <- site_files %>% filter(!is.na(path))
-
-  if (nrow(files) == 0) {
-    print('download data')
-  }
-  
-  if (nrow(files) > 0) {
-  return(site_files)
-  }
-}
 
 #using files list: 1) make maps, 2) extract data:
 maplist <- map_site_tiles(files)
@@ -358,7 +181,6 @@ cat("All maps successfully exported to", out_dir, "\n")
 
 
 #can we locate the 1 m2 subplots?
-
 
 #train on the 8 x 1m2 subplots: 
 
