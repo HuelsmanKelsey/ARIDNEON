@@ -80,14 +80,6 @@ spec_avail <- function(which_site) {
     rename(specmonth = month)
 }
 
-spec_avail('CPER') %>%
-  group_by(year) %>%
-  summarise(minbouts = n_distinct(specmonth))
-
-get_prod_avail('CPER', 'refl', BRDF = FALSE) %>% 
-  group_by(year) %>%
-  summarise(minbouts = n_distinct(month))
-
 #this will tell you which years have both veg + AOP data and whether the AOP data are brdf corrected
 #NOTE: if the NEON API is down it won't work.
 both_avail <- function(which_site) { #default is BRDF = FALSE
@@ -156,9 +148,9 @@ check_dims <- function(which_site) {
   }
 }
 
-
 home <- '/Users/khuelsma/'
 avail_file_list('CPER')
+
 avail_file_list <- function(which_site, 
                            which_year = NULL,
                            download = FALSE) {
@@ -282,63 +274,6 @@ avail_file_list <- function(which_site,
   } #each tile year
 }
 
-    
-    tile_year_boutsfound <- tile_year %>%
-      group_by(year, easting, northing, minbouts) %>%
-      summarise(nboutsfound = n_distinct(h5_filepath)) %>%
-      distinct(year, minbouts, nboutsfound)
-      
-    tile_year
-    
-    #if we've made it this far and we don't have files, we should download them:
-    if (tile_year_boutsfound$nboutsfound < tile_year_boutsfound$minbouts)  {
-      print('need more bout files')
-      
-      if (download == TRUE) {
-        
-        setwd(home)
-        
-        cat(sprintf("  File not found. Downloading tile: E=%d, N=%d, Year=%s\n", easting, northing, year))
-        #download the hdf5 file:
-        tryCatch({
-          
-          #year, easting, northing, DP, 
-          
-          neonUtilities::byTileAOP(dpID = DP, 
-                                   site = which_site, 
-                                   easting = easting, 
-                                   northing = northing, 
-                                   buffer = 0, 
-                                   check.size = FALSE, 
-                                   include.provisional = TRUE, 
-                                   year = year, 
-                                   token = neon_token, progress = TRUE)
-        }, error = function(e) warning("HDF5 Download failed"))
-        
-        if (is.na(rgbfiles)) {
-          
-          setwd(home)
-          
-          tryCatch({
-            # FIX: Explicitly use RGB DP ID here!
-            neonUtilities::byTileAOP(dpID = rgb_DP,
-                                     site = which_site, 
-                                     easting = easting, 
-                                     northing = northing, 
-                                     buffer = 0, check.size = FALSE, 
-                                     include.provisional = TRUE, 
-                                     year = year, 
-                                     token = neon_token, 
-                                     progress = TRUE)
-          }, error = function(e) warning("RGB Download failed"))
-        }
-        
-      } #download = TRUE
-    } #if lacking bouts
-
-    } #each tile-year
-}
-
 avail_site_files <- avail_file_list('CPER', 2024)
 
 #hyperspectral: this creates a list of hyperspectral raster or special band rasters of each tile
@@ -347,7 +282,22 @@ avail_site_files <- avail_file_list('CPER', 2024)
 home <- '/Users/khuelsma/'
 #map_site_tiles will return a dataframe that gives you easy to open .tifs of full tiles: 
 # hsi, special bands, and rgb
-map_site_tiles <- function(which_site, which_year = NULL, download = FALSE, output_dir = home) {
+map_site_tiles <- function(which_site, which_year = NULL, 
+                           download = FALSE, 
+                           output_dir = home) {
+  
+  filepath <- paste0(
+    '/Users/khuelsma/Desktop/ARIDNEON/',
+    which_site, '_', which_year, '_', 'tiles.csv')
+  
+  if (file.exists(filepath)) {
+    
+    input_with_paths <- read.csv(filepath)
+    return(input_with_paths)
+  }
+  
+  if (!file.exists(filepath)) {
+    print('file does not exist')
   
   # 0. Create output directory if it doesn't exist
   if (!dir.exists(output_dir)) {
@@ -487,39 +437,135 @@ map_site_tiles <- function(which_site, which_year = NULL, download = FALSE, outp
     
     } #each row 
   
+  #export this dataframe:
+  setwd('/Users/khuelsma/Desktop/ARIDNEON/')
+  write.csv(input_with_paths, file = paste0(which_site, '_', which_year, '_', 'tiles.csv'))
+  
   return(input_with_paths)
+  } #this creates the file
+}
+input_with_paths <- read.csv(CPER_2024_tiles)
+input_with_paths <- map_site_tiles('CPER', 2024)
+
+#so then, you can use input_with_paths to open each tiff, extract subplots, and pair w vegetation
+
+#open each tiff and extract reflectance for subplots: 
+hsi_list <- unique(input_with_paths$hsi_saved_path)
+rgb_list <- unique(input_with_paths$rgb_filepath)
+spbands_list <- unique(input_with_paths$spbands_saved_path)
+
+get_site_subplots <- function(which_site, which_size) {
+  
+  subplots_shp <- terra::vect(
+    '/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Subplots_V11.shp')
+
+  #subset the shape using only plots at the site and "div" (diversity) applications
+  subplot_shp <- subset(subplots_shp, 
+                        stringr::str_detect(subplots_shp$plotID, which_site ) & 
+                          stringr::str_detect(subplots_shp$appMods, 'div'))
+  
+  if (which_size == 100) {
+    subs <- subset(subplot_shp, stringr::str_detect(subplot_shp$subplotID, paste0('_', which_size)))
+    print(subs)
+  }
+  
+  if (which_size == 1 | which_size == 10) {
+    subs <- subset(subplot_shp, stringr::str_detect(subplot_shp$subplotID, paste0('_', which_size, '_')))
+    print(subs)
+  }
+  return(subs)
 }
 
-CPER_2024 <- map_site_tiles('CPER', 2024)
 
 
-que[1,]$rgb_filepath
-que[1,]$h5_filepath
+# extract_spectra opens files from list and extract necessary info, 
+#inputs are:
+#1) a file list of tiffs: hsi_list or rgb_list or spbands_list
+#which_rast = hsi_list, rgb_list, spbands_list
+#2) A subplot list of particular sizes: get_site_subplots(which_site, which_size)
+#which_size = 1, 10, 100
 
-this_file <- que[1,]$spbands_saved_path
-this_tile <- terra::rast(this_file)
+extract_spectra <- function(which_rast, which_site, which_size) {
+  input <- which_rast
+  which_subplots <- get_site_subplots(which_site, which_size)
+  
+  extracted <- foreach(
+    img = 1:length(input),
+    .combine = rbind) %do% {
+      
+      hsi_rast <- terra::rast(input[[img]])
+      tile_extent <- terra::ext(hsi_rast)
+      #align subplots selected above to hsi rast projection
+      subplots_shp_aligned <- terra::project(which_subplots, hsi_rast) #can adjust to any subplot input
+      #restrict to just the subplots in that tile
+      plots_in_tile <- subplots_shp_aligned[tile_extent]
+      
+      if (nrow(plots_in_tile) > 0) { #if there are plots in the tile:
+        #create a lookup table with plotID and subplotID
+        plot_lookup <- data.frame(
+          ID = 1:nrow(plots_in_tile),
+          plotID = plots_in_tile$plotID,
+          subplotID = plots_in_tile$subplotID
+        )
+        
+      halfwidth = 0.5*(sqrt(unique(plots_in_tile$subpltSize)))
+      square_plot <- as.polygons(terra::ext(terra::buffer(plots_in_tile, width = halfwidth)))
+      # terra::rowColFromCell(extracted_plot_data, extracted_df$cell)
 
-PRI_rast <- (this_tile[['NIR']] - this_tile[['green']]) / (this_tile[['NIR']] + this_tile[['green']])
+      #figure out how to get info from plots in tile... perhaps create geometry in dataframe?
+      foreach(square_plot,
+              .combine = rbind) %do% {
+        extracted_plot_map <- crop(hsi_rast, terra::ext(square_plot))
+        terra::plotRGB(extracted_plot_map, r = 1, g = 2, b = 3, stretch = 'lin')
+        
+        extracted_plot <- terra::extract(hsi_rast, 
+                                         terra::ext(square_plot),
+                                         xy = TRUE, 
+                                         cells = TRUE) %>%
+          mutate(cell_easting = x,
+                 cell_northing = y)
+        
+      }
+      
+      }
+    }
+}
+      
+      extracted_data_labeled <- merge(extracted_plot, plot_lookup, by = "ID")      
+      } #multiple plots in a tile
+    } #each raster from list
+}
+extract_spectra(spbands_list, 'CPER', 1)
 
-NDVI_rast <- (this_tile[['NIR']] - this_tile[['red']]) / (this_tile[['NIR']] + this_tile[['red']] + 0.0001)
+extracted_1m <- extract_spectra(spbands_list, 'CPER', 1)
+unique(extracted_1m$plotID)
 
-NIRv_rast <- this_tile[['NIR']] * NDVI_rast
+extracted_1m %>% group_by(subplotID, plotID) %>% summarise(n = n_distinct(cell)) %>% filter(n > 1)
 
-CCI_rast <- (this_tile[['PRI']] - this_tile[['red']]) / (this_tile[['PRI']] + this_tile[['red']])
+extracted_1m_long <- extracted_1m %>%
+  pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
+  left_join(kept_bands) %>%
+  select(cell, cell_easting, cell_northing,
+         plotID, subplotID,
+         band, year, wv, refl) %>%
+  mutate(eventID = paste0(plotID, '_', subplotID, '_', year))
 
-indices <- c(CCI_rast, NIRv_rast, PRI_rast)
+summary_1m <- extracted_1m_long %>%
+  group_by(eventID, wv) %>%
+  summarise(mean_refl = mean(refl),   
+            #if used buffer and sample more than 1 cell
+            sd_refl = sd(refl),
+            se_refl = sd_refl/sqrt(n()),
+            CV_refl = sd_refl/mean_refl)
 
-names(indices) <- c("CCI", "NIRv", "PRI")
+summary_1m %>%
+  ggplot(aes(x = wv, y = mean_refl)) +
+  geom_point()
 
-indices_rast <- terra::plotRGB(indices, r=1, g=2, b=3, stretch="lin")
 
-#so then, you can open each tiff, extract plots, and pair w vegetation
 
-#open each tiff and extract AND MAP plots: 
 
-#pair w veg
 
-map_site_tiles
 
     wv <- rhdf5::h5read(thisfile$path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
     file_wv_df <- data.frame(wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
@@ -536,122 +582,9 @@ map_site_tiles
     
 
 
-#pulling out subplots from RGB imagery
-subplots_rgb_list <- foreach (img = tilemap_rgb_list) %do% { 
-  #individual img is a row from the tilemap rgb list (or whatever is entered above)
-  tilemap <- img
-  #establish the extent of the rgb tile so you can clip the list of all plots later to just those in the tile
-  tile_extent <- terra::ext(tilemap)
-  #project subplot shape file to the tile map so we can extract
-  subplots_shp_aligned <- terra::project(which_subplots, tilemap)
-  #filter all the subplots to just the ones in the tile's extent
-  plots_in_tile <- subplots_shp_aligned[tile_extent]
-  
-  if (nrow(plots_in_tile) > 0) { #as long as there are plots in the tile,
-    plot_lookup <- data.frame(
-      ID = 1:nrow(plots_in_tile), #we will make a dataframe with plot ID (just a number)
-      subplotID = plots_in_tile$subplotID, #the subplot and plot ID (from the dataframe)
-      plotID = plots_in_tile$plotID #so that we can reference which plot is which
-    )
     
-    foreach(plot = nrow(plots_in_tile),
-            .combine = rbind) %do% {
-              subplot <- plots_in_tile[plot,] #for each plot, numbered 1 to nrow
-              subplot_df <- as.data.frame(subplot)
-              subplotID = subplot_df$subplotID
-              buffer_pt <- terra::buffer(subplot, width = 2) #buffer so we account for spatial uncertainty?
-              cropped_plot <- terra::crop(tilemap, buffer_pt) #crop the map to just the buffered point
-              plotRGB(cropped_plot) #plot the cropped plot
-            }
-  } #plots in tile
-} #each tile from the list
-
-# Open files from list and extract necessary info, interpret the data
-#input is a tile list: spbands or hsi (CPER_spbands_tile_list or CPER_hsi_tile_list)
-
-#     Save summaries and HSI map
-#output is summary and map list
-# location info for plots:
-
-#CPER plots 
-plots_shp_CPER_plants <- subset(plots_shp, stringr::str_detect(plots_shp$plotID, 'CPER') &
-                                  'div' %in% plots_shp$appMods)
-subplots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Subplots_V11.shp')
-#CPER subplots
-subplot_shp_CPER_plants <- subset(subplots_shp, stringr::str_detect(subplots_shp$plotID, 'CPER') &
-                                   'div' %in% subplots_shp$appMods)
-
-  
-
-#subplot shapes we can use to extract values
-subplot_shp_400 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_400'))
-subplot_shp_100 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_100'))
-subplot_shp_10 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_10_'))
-subplot_shp_1 <- subset(subplot_shp_CPER_plants, stringr::str_detect(subplot_shp_CPER_plants$subplotID, '_1_'))
-
-
-
-input <- CPER_hsi_tile_list
-which_subplots <- subplot_shp_1
-#which_subplots <- subplot_shp_10
-#which_subplots <- subplot_shp_100
-#which_subplots <- subplot_shp_400 #(or 100, 10 or 1)
-
-subplots_hsi_1m <- foreach( 
-  img = 1:length(input),
-  .combine = rbind) %do% {
     
-    hsi_rast <- input[[img]]
-    #if you need to extract HSI: align hsi_rast to whatever you're using to extract (shape file or proj)
-    tile_extent <- terra::ext(hsi_rast)
-    subplots_shp_aligned <- terra::project(which_subplots, hsi_rast) #can adjust to any subplot input
-    #restrict to just the subplots in that tile
-    plots_in_tile <- subplots_shp_aligned[tile_extent]
-    if (nrow(plots_in_tile) > 0) { #if there are plots in the tile:
-      #create a lookup table with plotID and subplotID
-      plot_lookup <- data.frame(
-        ID = 1:nrow(plots_in_tile),
-        plotID = plots_in_tile$plotID,
-        subplotID = plots_in_tile$subplotID
-      )
-      
-      #extract the data for a nice lil dataframe
-      extracted_plot_data <- terra::extract(hsi_rast, plots_in_tile, cells = TRUE, xy = TRUE)
-      extracted_data_labeled <- merge(extracted_plot_data, plot_lookup, by = "ID") %>%
-        mutate(cell_easting = x,
-               cell_northing = y)
-      
-      extracted_data_labeled
-    }
-  } #end each tile
-
-extracted_1m <- subplots_hsi_1m
-extracted_1m_long <- extracted_1m %>%
-  pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
-  left_join(kept_bands) %>%
-  select(cell, cell_easting, cell_northing,
-         plotID, subplotID,
-         band, year, wv, refl) %>%
-  mutate(eventID = paste0(plotID, '_', subplotID, '_', year))
-
-summary_1m <- extracted_1m_long %>%
-  group_by(eventID, wv) %>%
-  summarise(mean_refl = mean(refl))
-
-#if used buffer and sample more than 1 cell
-#            sd_refl = sd(refl),
-#          se_refl = sd_refl/sqrt(n()),
-#           CV_refl = sd_refl/mean_refl)
-
-summary_1m %>%
-  ggplot(aes(x = wv, y = mean_refl)) +
-  geom_point()
-
-plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
-
-
-
-
+    
 #code that might be useful: 
 #loading a single file to get relevant metadata; just in case?
 which_site <- 'CPER'
@@ -683,24 +616,6 @@ hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
 tile_extent <- terra::ext(hsi_rast)
 subplots_shp_aligned <- terra::project(subplot_shp_1, hsi_rast) #can adjust to any subplot input
 
-
-
-
-
-
-
-
-# Extra code --------------------------------------------------------------
-
-
-#I think this code is the one that doesn't work well but might have useful content
-extract_tile_plots <- function(input) {
-  if(nrow(input) == 0) return(data.frame())
-  all_plot_data <- list()
-  square_plot <- as.polygons(ext(buffer(thisplot_vect, width = 10)))
-  extracted_plot_data <- crop(hsi_rast, terra::ext(square_plot))
-  
-  extracted_df <- terra::as.data.frame(extracted_plot_data, xy = TRUE, cells = TRUE)
   rc <- terra::rowColFromCell(extracted_plot_data, extracted_df$cell)
   
   extracted_plot_df <- extracted_df %>%
@@ -711,3 +626,16 @@ extract_tile_plots <- function(input) {
   
   all_plot_data[[paste0(thisplot$plotID, "_", thisfile$year, "_", f)]] <- extracted_plot_df
 
+  extracted_plot_df <- extracted_df %>%
+    mutate(sample_row = rc[,1], sample_col = rc[,2], plotID = thisplot$plotID) %>%
+    pivot_longer(cols = unique(kept_bands$band), names_to = 'band', values_to = 'refl') %>%
+    left_join(kept_bands, by = "band") %>%
+    left_join(thisplot %>% select(-any_of("year")), by = "plotID")
+  
+  
+  #extract the data for a nice lil dataframe
+  extracted_plot_data <- terra::extract(hsi_rast,
+                                        buffer_plots,
+                                        cells = TRUE, 
+                                        xy = TRUE) 
+  
