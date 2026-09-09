@@ -514,9 +514,6 @@ actual_soil_cover <- cover_1m %>%
   distinct(eventID, percentCover)
 actual_soil_cover
 
-
-
-
 # Visualize and understand the distributions 
 
 # Summarize: 
