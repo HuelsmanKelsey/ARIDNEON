@@ -57,7 +57,7 @@ input <- rgb_list
 tiles_only <- TRUE
 site_tilelist <- c()
 #mapping rgb
-foreach(t = 1:2, #length(input),
+foreach(t = 1:length(input),
                  .combine = rbind) %do% {
                    
   filename <- input[t]
@@ -102,9 +102,10 @@ foreach(t = 1:2, #length(input),
 }
 
 #create full site rgb image:
-site_tilelist
 full_site_rgb10 <- terra::merge(terra::sprc(site_tilelist))
-terra::plotRGB(full_site_rgb10)
+
+full_site_dullrgb <- terra::plotRGB(full_site_rgb10)
+full_site_stretchrgb <- terra::plotRGB(full_site_rgb10, stretch = 'lin')
 
 
 # LOCATION INFO -----------------------------------------------------------
