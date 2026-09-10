@@ -11,13 +11,19 @@ hsi_list <- unique(input_with_paths$hsi_saved_path)
 rgb_list <- unique(input_with_paths$rgb_filepath)
 spbands_list <- unique(input_with_paths$spbands_saved_path)
 
-#what we will extract:
+
+#what we will extract: big plot polygons or subplots
+#polygons of plots; project when needed later
+#plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
+
 subplots_shp <- terra::vect(
   '/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Subplots_V11.shp')
 #subset the shape using only plots at the site and "div" (diversity) applications
 site_subplots_shp <- subset(subplots_shp, 
                             stringr::str_detect(subplots_shp$plotID, which_site ) & 
                               stringr::str_detect(subplots_shp$appMods, 'div'))
+
+unique(site_subplots_shp$subpltSize)
 
 input <- spbands_list
 VI_list <- c() #initialize empty list
@@ -52,12 +58,23 @@ foreach(t = 1:length(input)) %do% {
     return(VI_list)
 }
 
-#for every tile file input:
-input <- rgb_list
-tiles_only <- TRUE
-site_tilelist <- c()
+
+#create fullsite vi:
+#create full site rgb image:
+full_site_vis <- terra::merge(terra::sprc(VI_list))
+
+full_site_stretchrgb <- terra::plotRGB(full_site_vis, stretch = 'lin')
+
+
+
 #mapping rgb
-foreach(t = 1:length(input),
+input <- rgb_list #for every rgb tile file input
+#tiles_only = just map and save the tiles in site_tilelist; 
+# if tiles_only == FALSE, we also clip out PLOTS
+tiles_only <- FALSE
+site_tilelist <- c()
+
+foreach(t = 1:3,#length(input),
                  .combine = rbind) %do% {
                    
   filename <- input[t]
@@ -73,33 +90,42 @@ foreach(t = 1:length(input),
     #saves a list of them for full site mapping
     site_tilelist[[t]] <- this_tile
   }
+  
   if (tiles_only == FALSE) {
+  
+  plots_projected <- terra::project(site_subplots_shp, this_tile) #can also use David's data here
+  plots_in_tile <- plots_projected[tile_extent]
+  
+  if (nrow(plots_in_tile) > 0) { #if there are plots in a tile, create lookup table
+    #create a translation between extraction ID and plotID
+    plot_lookup <- data.frame(
+      ID = 1:nrow(plots_in_tile), #we will make a dataframe with plot ID (just a number)
+      subplotID = plots_in_tile$subplotID, #the subplot and plot ID (from the dataframe)
+      plotID = plots_in_tile$plotID #so that we can reference which plot is which
+    )
     
-    plots_projected <- terra::project(site_subplots_shp, this_tile) #can also use David's data here
-    plots_in_tile <- plots_projected[tile_extent]
-    
-    if (nrow(plots_in_tile) > 0) { #if there are plots in a tile, create lookup table
-      #create a translation between extraction ID and plotID
-      
-      hello <- foreach(plot = nrow(plots_in_tile)) %do% {
-                
-                subplot <- plots_in_tile[plot,] #for each plot, numbered 1 to nrow
-                
-                subplot_df <- as.data.frame(subplot)
-                subplotID = subplot_df$subplotID
-                
-                buffer_pt <- terra::buffer(subplot, width = 2) #buffer so we account for spatial uncertainty?
-                cropped_plot <- terra::crop(this_tile, buffer_pt) #crop the map to just the buffered point
+    hello <- foreach(ID = nrow(plots_in_tile),
+                     .combine = rbind) %do% {
 
-                terra::plotRGB(cropped_plot)
-                terra::plotRGB(cropped_plot, r = 1, g = 2, b = 3, stretch = 'lin') #plot the cropped plot
-                
-                subplot_df  #for rbinding
-              }
-    } #plots in tile
-    
-  } #each tile from the list
-}
+      this_plot <- plots_in_tile[ID,] #for each plot, numbered 1 to nrow
+      
+      this_plot_df <- as.data.frame(this_plot)
+      subplotID = this_plot_df$subplotID
+      
+      buff_extent <- terra::ext(terra::buffer(this_plot, width = 5))
+      buffer_pt <- terra::buffer(this_plot, width = 2) #buffer so we account for spatial uncertainty?
+      
+      cropped_plot <- terra::crop(this_tile, buffer_pt) #crop the map to just the buffered point
+      
+      terra::plotRGB(cropped_plot)
+      terra::plotRGB(cropped_plot, r = 1, g = 2, b = 3, stretch = 'lin') #plot the cropped plot
+      
+      this_plot_df
+                     }
+  } #plots in tile
+  } #tiles only = FALSE
+  hello
+                 } #each file
 
 #create full site rgb image:
 full_site_rgb10 <- terra::merge(terra::sprc(site_tilelist))
@@ -107,98 +133,6 @@ full_site_rgb10 <- terra::merge(terra::sprc(site_tilelist))
 full_site_dullrgb <- terra::plotRGB(full_site_rgb10)
 full_site_stretchrgb <- terra::plotRGB(full_site_rgb10, stretch = 'lin')
 
-
-# LOCATION INFO -----------------------------------------------------------
-#import shapefiles or lat/lon csv
-all_NEON_plots <- read.csv(file = '/Users/khuelsma/ARIDNEON/All_NEON_TOS_Plot_Centroids_V11.csv')
-#NEON shape files: choose one to assign to LL
-plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
-#project when needed later
-subplots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Subplots_V11.shp')
-
-#buff_extent <- terra::ext(terra::buffer(transects, width = 5))
-
-if (tiles_only == FALSE) {
-  
-  plots_projected <- terra::project(site_subplots_shp, this_tile) #can also use David's data here
-  plots_in_tile <- plots_projected[tile_extent]
-  
-  if (nrow(plots_in_tile) > 0) { #if there are plots in a tile, create lookup table
-    #create a translation between extraction ID and plotID
-    
-    plot_lookup <- data.frame(
-      ID = 1:nrow(plots_in_tile), #we will make a dataframe with plot ID (just a number)
-      subplotID = plots_in_tile$subplotID, #the subplot and plot ID (from the dataframe)
-      plotID = plots_in_tile$plotID #so that we can reference which plot is which
-    )
-    
-    hello <- foreach(plot = nrow(plots_in_tile)) %do% {
-      
-      subplot <- plots_in_tile[plot,] #for each plot, numbered 1 to nrow
-      
-      subplot_df <- as.data.frame(subplot)
-      subplotID = subplot_df$subplotID
-      
-      buffer_pt <- terra::buffer(subplot, width = 2) #buffer so we account for spatial uncertainty?
-      cropped_plot <- terra::crop(this_tile, buffer_pt) #crop the map to just the buffered point
-      
-      terra::plotRGB(cropped_plot)
-      terra::plotRGB(cropped_plot, r = 1, g = 2, b = 3, stretch = 'lin') #plot the cropped plot
-      
-      subplot_metrics  #for rbinding
-    }
-  } #plots in tile
-  
-  
-  
-input <- hsi_list
-#extracting:
-hello <- foreach(t = 1:3,
-                 .combine = rbind) %do% {
-                   
-                   this_tile <- terra::rast(input[[t]])
-                   tile_extent <- ext(this_tile)
-                   
-                   plots_projected <- terra::project(site_subplots_shp, this_tile) #can also use David's data here
-                   plots_in_tile <- plots_projected[tile_extent]
-                     
-                     
-                   if (nrow(plots_in_tile) > 0) { #if there are plots in a tile, create lookup table
-                       #create a translation between extraction ID and plotID
-                       
-                     plot_lookup <- data.frame(
-                       ID = 1:nrow(plots_in_tile), #we will make a dataframe with plot ID (just a number)
-
-                       subplotID = plots_in_tile$subplotID, #the subplot and plot ID (from the dataframe)
-                       plotID = plots_in_tile$plotID #so that we can reference which plot is which
-                       )
-                       
-                       hello <- foreach(
-                         plot = nrow(plots_in_tile),
-                                        
-                         .combine = rbind) %do% {
-                           subplot <- plots_in_tile[plot,] #for each plot, numbered 1 to nrow
-                           subplot_df <- as.data.frame(subplot)
-                           subplotID = subplot_df$subplotID
-                           buff_size = 0.5*sqrt(subplot_df$subpltSize) +2
-                           subplot_metrics <- terra::extract(this_tile, 
-                                                             subplot, 
-                                                             buffer = buff_size,
-                                                             fun = mean,
-                                                             xy = TRUE,
-                                                             cells = TRUE)
-                         
-                           print(subplot_metrics)
-                           }
-                   }
-                 }
-}
-                           
-#each tile from the list
-
-hello %>%
-  group_by(plotID, subplotID) %>%
-  summarise(hi = n_distinct(cell))
 
 #full tile maps of VIs
 terra::plotRGB(VI_rast, r = 1, g = 2, b = 3, stretch = 'lin')
