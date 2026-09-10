@@ -268,20 +268,116 @@ Occurrence <- site_veg %>%
 # Combining Event and Occurrence ------------------------------------------
 #All observations:
 ARID_Obs <- Occurrence %>%
-  filter(!is.na(coverType)) %>% 
+ # filter(!is.na(coverType)) %>% 
   left_join(Event, 
             by = c('eventID', 'eventDate', 'year'),
             relationship = "many-to-many") %>%
   distinct()
 
+# Make PA matrix:
+#if which_size is null it will do whole plot; if which size isn't, it will do the size provided (1, 10, or 100)
+make_PAmat <- function(which_site, which_year, which_species, which_size = NULL) {
+  
+  if (is.null(which_size)) { #default for whole plot
+    wide_df <- ARID_Obs %>%
+      filter(year == which_year) %>%
+      distinct(plotID, boutNumber, year, scientificName) %>%
+      mutate(recode = case_when(scientificName == which_species ~ 'SOI',
+                                scientificName != which_species ~ 'other'),
+             eventID = paste0(plotID, '_', year))
+  }
+  
+  if (!is.null(which_size)) { #1m subplot
+    wide_df <- ARID_Obs %>%
+      filter(year == which_year) %>%
+      filter(sampleSizeValue == which_size) %>%
+      distinct(plotID, subplotID, boutNumber, year, scientificName) %>%
+      mutate(recode = case_when(scientificName == which_species ~ 'SOI',
+                                scientificName != which_species ~ 'other'),
+             eventID = paste0(plotID, '_', subplotID, '_', year))
+  }
+    
+  wide_df <- wide_df %>%
+    group_by(eventID, boutNumber) %>%
+    count(recode) %>%
+    na.omit() %>%
+    pivot_wider(names_from = recode, values_from = n, values_fill = 0) %>%
+    ungroup()
+  
+  PA_mat <- wide_df %>%
+    ungroup() %>%
+    select(SOI, other) %>%
+    as.matrix()
+ 
+  rownames(PA_mat) <- wide_df$eventID
+  
+  return(PA_mat)
+}
+PA_mat <- make_PAmat('CPER', 2024, 'Opuntia polyacantha', 100)
+PA_mat
+
+# Make % cov matrix:
+
+# Whole plot: P/A
+which_species <- 'Opuntia polyacantha'
+which_year <- 2024
+
+
+# subplot specific: P/A (each subplot)
+which_size <- 100 #10, 100
+  
+ARID_Obs %>%
+  filter(year == which_year) %>%
+  filter(sampleSizeValue == which_size) %>%
+  distinct(plotID, subplotID, boutNumber, year, scientificName) %>%
+  mutate(recode = case_when(scientificName == which_species ~ which_species,
+                            scientificName != which_species ~ 'other'),
+         eventID = paste0(plotID, '_', subplotID, '_', year)) %>%
+  group_by(eventID, boutNumber) %>%
+  count(recode) %>%
+  na.omit() %>%
+  pivot_wider(names_from = recode, values_from = n, values_fill = 0) %>%
+  print(n = 100)
+
+# whole plot: size-specific presences and % cover (for 1m)
+contained_within_100
+contained_within_10
+ARID_Obs %>%
+  filter(year == which_year) %>%
+  distinct(plotID, boutNumber, year, scientificName) %>%
+  mutate(recode = case_when(scientificName == which_species ~ which_species,
+                            scientificName != which_species ~ 'other'),
+         eventID = paste0(plotID, '_', year)) %>%
+  group_by(eventID, boutNumber) %>%
+  count(recode) %>%
+  na.omit() %>%
+  pivot_wider(names_from = recode, values_from = n, values_fill = 0) %>%
+  print(n = 100)
+
+# vegetation vibe: PA, % cover
+
+#whole plot PA
+
+#whole plot summary of subplots
+
+#subplot specific pairings
+
+# capturing vegetation "vibe" using PA
+
+# capturing vegetation “vibe” using % cover
+
 #summary of % cover at each coverlocation (ground, understory, overstory)
 tot_cov_by_group <- ARID_Obs %>% 
   group_by(subplotID, plotID, year, boutNumber, coverLocation) %>% 
   summarise(totcov = sum(percentCover)) 
-
 tot_cov_by_subplot <- tot_cov_by_group %>%
   group_by(subplotID, plotID, boutNumber, year) %>%
   summarise(totcov2 = sum(totcov))
+
+
+
+
+
 
 #Looking at bouts within a year:
 ARID_Obs %>%
@@ -353,22 +449,13 @@ contained_within_100
 nativeStatusCode taxonRank  family
 establishmentMeans
 scientificName
-year                eventID       genus speciesEpithet
+year
+eventID       
+genus 
+speciesEpithet
 divDataType == plantSpecies
-# Whole plot: P/A
-# whole plot: size-specific presences and % cover (for 1m)
-# subplot specific: P/A (each subplot)
-# vegetation vibe: PA, % cover
 
-#whole plot PA
 
-#whole plot summary of subplots
-
-#subplot specific pairings
-
-# capturing vegetation "vibe" using PA
-
-# capturing vegetation “vibe” using % cover
 # Analysis of 1m plant cover, CPER 2024 ------------------------------------
 
 #this is every single 1m subplot from CPER 2024
@@ -376,12 +463,14 @@ cover_1m <- ARID_Annual_Obs %>% #or can do ARID_Obs for multiple bouts!
   filter(sampleSizeValue == 1) %>%
   filter(locationID == 'CPER') %>%
   filter(year == 2024) %>%
-  distinct(eventID,
+  distinct(eventID, 
            coverType, coverTypeGeneral, percentCover, 
            contained_within_10, contained_within_100)
 
 cover_1m %>%
   filter(coverType == 'soil') 
+unique(cover_1m$eventID)
+
 
 #three options: 
 
@@ -529,7 +618,6 @@ soil_dom <- cover_1m %>%
   mutate(coverTypeRecode = ifelse(coverType == 'soil', 'soil', 'other')) %>%
   group_by(eventID, coverTypeRecode) %>%
   summarise(totcov = sum(percentCover))
-
 soil_dom_summ <- soil_dom %>%
   group_by(eventID) %>%
   summarise(total = sum(totcov)) %>%
@@ -547,10 +635,14 @@ actual_soil_cover <- cover_1m %>%
 actual_soil_cover
 
 # Visualize and understand the distributions 
+hist(actual_soil_cover$percentCover)
+#greatest frequency (~70 subplots with 10-20%)
+IQR(actual_soil_cover$percentCover)
 
 # Summarize: 
 # Whole plot, subplot size-specific analyses of % cover
 # relative frequency for plot and larger subplots
+
 
 # among (matrix rows) in terms of cover and composition, 
 #which is then used to characterize each organizational level: 
