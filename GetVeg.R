@@ -47,21 +47,24 @@ library('foreach')
 
 # Workflow:  --------------------------------------------------------------
 # Choose a site/location and filter the vegetation dataset
+
+which_site <- 'CPER'
+
 repo_dir <- '/Users/khuelsma/Desktop/ARIDNEON/'
 setwd(repo_dir)
 
 #plots and subplots from ARID sites: CPER, RMNP, STER, JORN, SRER
 ARID_veg <- read.csv('NEON_ARID_veg.csv')
 subplots <- read.csv('NEON_ARID_subs.csv')
-#subplots from CPER only
-CPER_subs <- subplots %>%
-  filter(siteID == 'CPER')
-CPER_veg <- ARID_veg %>%
-  filter(siteID == 'CPER')
+#subplots from which_site only
+site_veg_subs <- subplots %>%
+  filter(siteID == which_site)
+site_veg <- ARID_veg %>%
+  filter(siteID == which_site)
 
 # Crosswalk / interpret the data
 # Creating a single Event dataframe ---------------------------------------
-Event_subplots <- subplots %>%
+Event_subplots <- site_veg_subs %>%
   select(domainID, 
          siteID, 
          endDate, 
@@ -81,7 +84,7 @@ Event_subplots <- subplots %>%
          samplingImpracticalRemarks, 
          samplingProtocolVersion)
 # ^ this gets rbinded to the next section
-Event <- ARID_veg %>%
+Event <- site_veg %>%
   #create variables that are in the subplot dataset so we can combine the two
   mutate(divDataType = NA,
          otherVariablesPresent = NA,
@@ -150,7 +153,7 @@ Event <- ARID_veg %>%
   )
 
 # Creating a single Occurrence dataframe ---------------------------------------
-Occurrence_subplots <- subplots %>%
+Occurrence_subplots <- site_veg_subs %>%
   select(uid, endDate, plotID, subplotID, boutNumber, release, publicationDate, 
          samplingImpractical, samplingImpracticalRemarks, samplingProtocolVersion,
          otherVariablesPresent, divDataType, otherVariables, percentCover,  #divDataType is plantSpecies, otherVariables
@@ -159,7 +162,7 @@ Occurrence_subplots <- subplots %>%
          taxonRank, family, scientificName, targetTaxaPresent, heightPlantOver300cm,
          heightPlantSpecies, recordedBy, measuredBy, identificationHistoryID, identificationReferences, identificationQualifier)
 # ^ this gets rbinded in the next section
-Occurrence <- ARID_veg %>%
+Occurrence <- site_veg %>%
   mutate(divDataType = NA,
          otherVariablesPresent = NA,
          otherVariables = NA,
@@ -275,6 +278,7 @@ ARID_Obs <- Occurrence %>%
 tot_cov_by_group <- ARID_Obs %>% 
   group_by(subplotID, plotID, year, boutNumber, coverLocation) %>% 
   summarise(totcov = sum(percentCover)) 
+
 tot_cov_by_subplot <- tot_cov_by_group %>%
   group_by(subplotID, plotID, boutNumber, year) %>%
   summarise(totcov2 = sum(totcov))
@@ -342,6 +346,15 @@ ARID_Annual_Obs <- ARID_Obs %>%
 # Visualize and understand the distributions ?
 
 # Summarize: 
+ARID_Obs
+locationID, siteNumber habitat
+plotID subplotID boutNumber
+contained_within_100
+nativeStatusCode taxonRank  family
+establishmentMeans
+scientificName
+year                eventID       genus speciesEpithet
+divDataType == plantSpecies
 # Whole plot: P/A
 # whole plot: size-specific presences and % cover (for 1m)
 # subplot specific: P/A (each subplot)
@@ -367,7 +380,10 @@ cover_1m <- ARID_Annual_Obs %>% #or can do ARID_Obs for multiple bouts!
            coverType, coverTypeGeneral, percentCover, 
            contained_within_10, contained_within_100)
 
-#two options: 
+cover_1m %>%
+  filter(coverType == 'soil') 
+
+#three options: 
 
 #one, group all plants (coverTypeGeneral)
 percentCoverGeneral <- cover_1m %>%
@@ -401,6 +417,22 @@ mat_spec <- percentCoverSpecific_wide %>%
   as.matrix()
 row.names(mat_spec) <- percentCoverSpecific_wide$eventID
 
+
+percentCoverPlantSp <- cover_1m %>%
+  filter(coverTypeGeneral == 'plants') %>%
+  group_by(eventID, contained_within_10, contained_within_100, coverType) %>%
+  summarise(cov = sum(percentCover))
+percentCoverPlantSp_wide <- percentCoverPlantSp %>%
+  ungroup() %>%
+  distinct(eventID, coverType, cov) %>%
+  pivot_wider(names_from = coverType,
+              values_from = cov,
+              values_fill = 0) %>%
+  ungroup()
+mat_plantsp <- percentCoverPlantSp_wide %>%
+  select(-eventID) %>%
+  as.matrix()
+row.names(mat_plantsp) <- percentCoverPlantSp_wide$eventID
 
 # PCA: specific and general --------------------------------------------
 # Specific cover PCA ------------------------------------------------------
