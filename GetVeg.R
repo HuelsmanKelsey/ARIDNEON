@@ -11,7 +11,6 @@
 # relative frequency for plot and larger subplots
 
 # capturing vegetation “vibe” using PA or % cover
- 
 
 # Load packages -----------------------------------------------------------
 
@@ -46,17 +45,15 @@ library('doParallel')
 library('foreach')
 
 # Workflow:  --------------------------------------------------------------
-# Choose a site/location and filter the vegetation dataset
-
-which_site <- 'CPER'
-
+# Load vegetation dataset and choose a site to filter:
 repo_dir <- '/Users/khuelsma/Desktop/ARIDNEON/'
 setwd(repo_dir)
-
 #plots and subplots from ARID sites: CPER, RMNP, STER, JORN, SRER
 ARID_veg <- read.csv('NEON_ARID_veg.csv')
 subplots <- read.csv('NEON_ARID_subs.csv')
+
 #subplots from which_site only
+which_site <- 'CPER'
 site_veg_subs <- subplots %>%
   filter(siteID == which_site)
 site_veg <- ARID_veg %>%
@@ -124,11 +121,11 @@ Event <- site_veg %>%
     #adding all smaller scale occurrences to broader ones
     contained_within_100 = case_when(
       sampleSizeValue == 100 ~ paste0(plotID, '_', subplotID, '_', year),
-      sampleSizeValue == 10 ~ paste0(plotID, '_', paste0(strtrim(subplotID, 7), 0), '_', year),
-      sampleSizeValue == 1 ~ paste0(plotID, '_', paste0(strtrim(subplotID, 5), 00), '_', year)),
+      sampleSizeValue == 10 ~ paste0(plotID, '_', as.character(strtrim(subplotID, 5)), '0', '_', year),
+      sampleSizeValue == 1 ~ paste0(plotID, '_', strtrim(subplotID, 4), '00', '_', year)),
     contained_within_10 = case_when(
-      sampleSizeValue == 10 ~ paste0(plotID, '_', subplotID, '_', year),
-      sampleSizeValue == 1 ~ paste0(plotID, '_', paste0(strtrim(subplotID, 5), 0), '_', year))
+      sampleSizeValue == 1 ~ paste0(plotID, '_', str_replace(subplotID, '_1_', '_10_'), '_', year),
+      sampleSizeValue == 10 ~ paste0(plotID, '_', subplotID, '_', year))
   ) %>% 
   select(
     siteNumber,
@@ -151,6 +148,7 @@ Event <- site_veg %>%
     minimumElevationInMeters,
     samplingProtocol
   )
+
 
 # Creating a single Occurrence dataframe ---------------------------------------
 Occurrence_subplots <- site_veg_subs %>%
@@ -274,9 +272,14 @@ ARID_Obs <- Occurrence %>%
             relationship = "many-to-many") %>%
   distinct()
 
-# Make PA matrix:
+#ARID_Obs is our input!
+
+# Make PA dataframe:
 #if which_size is null it will do whole plot; if which size isn't, it will do the size provided (1, 10, or 100)
-make_PAmat <- function(which_site, which_year, which_species, which_size = NULL) {
+make_PA_df <- function(which_site, which_year, which_species, 
+                       which_size = NULL,
+                       matrix = FALSE) #default
+  {
   
   if (is.null(which_size)) { #default for whole plot
     wide_df <- ARID_Obs %>%
@@ -286,93 +289,205 @@ make_PAmat <- function(which_site, which_year, which_species, which_size = NULL)
                                 scientificName != which_species ~ 'other'),
              eventID = paste0(plotID, '_', year))
   }
-  
-  if (!is.null(which_size)) { #1m subplot
+
+  if (!is.null(which_size)) { 
+    if (which_size == 1) {
+      ARID_Obs <- ARID_Obs %>%
+        filter(sampleSizeValue == which_size)
+    }
+    
     wide_df <- ARID_Obs %>%
       filter(year == which_year) %>%
-      filter(sampleSizeValue == which_size) %>%
-      distinct(plotID, subplotID, boutNumber, year, scientificName) %>%
+      distinct(plotID, subplotID, sampleSizeValue, contained_within_10, contained_within_100, boutNumber, year, scientificName) %>%
       mutate(recode = case_when(scientificName == which_species ~ 'SOI',
                                 scientificName != which_species ~ 'other'),
-             eventID = paste0(plotID, '_', subplotID, '_', year))
+             eventID = case_when(which_size == 1 ~ paste0(plotID, '_', subplotID, '_', year), #if 1m use subplot ID; 
+                                 which_size == 10 ~ paste0(contained_within_10),
+                                 which_size == 100 ~ paste0(contained_within_100))) %>%
+      print()
   }
-    
+  
   wide_df <- wide_df %>%
-    group_by(eventID, boutNumber) %>%
+    group_by(eventID) %>%
     count(recode) %>%
     na.omit() %>%
     pivot_wider(names_from = recode, values_from = n, values_fill = 0) %>%
-    ungroup()
-  
-  PA_mat <- wide_df %>%
     ungroup() %>%
-    select(SOI, other) %>%
-    as.matrix()
- 
-  rownames(PA_mat) <- wide_df$eventID
+    select(eventID, SOI, other) %>%
+    print()
   
-  return(PA_mat)
+  #if want a matrix:
+  if (matrix == TRUE) {
+    PA_mat <- wide_df %>%
+      select(SOI, other) %>%
+      as.matrix()
+    rownames(PA_mat) <- wide_df$eventID
+    
+    return(PA_mat)
+  }
+  return(wide_df)
 }
-PA_mat <- make_PAmat('CPER', 2024, 'Opuntia polyacantha', 100)
-PA_mat
 
-# Make % cov matrix:
+# explore and make % cover dataframe:
 
-# Whole plot: P/A
-which_species <- 'Opuntia polyacantha'
-which_year <- 2024
-
-
-# subplot specific: P/A (each subplot)
-which_size <- 100 #10, 100
-  
-ARID_Obs %>%
-  filter(year == which_year) %>%
-  filter(sampleSizeValue == which_size) %>%
-  distinct(plotID, subplotID, boutNumber, year, scientificName) %>%
-  mutate(recode = case_when(scientificName == which_species ~ which_species,
-                            scientificName != which_species ~ 'other'),
-         eventID = paste0(plotID, '_', subplotID, '_', year)) %>%
-  group_by(eventID, boutNumber) %>%
-  count(recode) %>%
-  na.omit() %>%
-  pivot_wider(names_from = recode, values_from = n, values_fill = 0) %>%
-  print(n = 100)
-
-# whole plot: size-specific presences and % cover (for 1m)
-contained_within_100
-contained_within_10
-ARID_Obs %>%
-  filter(year == which_year) %>%
-  distinct(plotID, boutNumber, year, scientificName) %>%
-  mutate(recode = case_when(scientificName == which_species ~ which_species,
-                            scientificName != which_species ~ 'other'),
-         eventID = paste0(plotID, '_', year)) %>%
-  group_by(eventID, boutNumber) %>%
-  count(recode) %>%
-  na.omit() %>%
-  pivot_wider(names_from = recode, values_from = n, values_fill = 0) %>%
-  print(n = 100)
-
-# vegetation vibe: PA, % cover
-
-#whole plot PA
-
-#whole plot summary of subplots
-
-#subplot specific pairings
-
-# capturing vegetation "vibe" using PA
-
-# capturing vegetation “vibe” using % cover
-
-#summary of % cover at each coverlocation (ground, understory, overstory)
+# summary of % cover at each coverlocation (ground, understory, overstory)
 tot_cov_by_group <- ARID_Obs %>% 
+  filter(year == which_year) %>%
+  filter(sampleSizeValue == 1) %>%
   group_by(subplotID, plotID, year, boutNumber, coverLocation) %>% 
   summarise(totcov = sum(percentCover)) 
+
+tot_cov_by_group
+
 tot_cov_by_subplot <- tot_cov_by_group %>%
   group_by(subplotID, plotID, boutNumber, year) %>%
   summarise(totcov2 = sum(totcov))
+
+tot_cov_by_subplot
+
+
+#percent cover of species or cover of interest
+make_perccov_df <- function(which_site, 
+                            which_year, 
+                            which_cover,
+                            which_size = NULL) {
+  
+  #this is every single 1m subplot from CPER 2024
+  cover_1m <- ARID_Obs %>% #or can do ARID_Obs for multiple bouts!
+    filter(sampleSizeValue == 1) %>%
+    filter(locationID == which_site) %>%
+    filter(year == which_year) %>%
+    distinct(eventID, plotID, subplotID, boutNumber, year,
+             coverType, coverTypeGeneral, percentCover, 
+             contained_within_10, contained_within_100) %>%
+    print()
+  
+  if (is.null(which_size)) { #default for whole plot
+    cover_df <- cover_1m %>%
+      mutate(recode = case_when(coverType == which_cover ~ 'SOI',
+                                coverType != which_cover ~ 'other'),
+             eventID = paste0(plotID, '_', year))
+  }
+  
+  if (!is.null(which_size)) { 
+    cover_df <- cover_1m %>%
+        mutate(recode = case_when(coverType == which_cover ~ 'SOI',
+                                  coverType != which_cover ~ 'other'),
+             
+               eventID = case_when(which_size == 1 ~ paste0(plotID, '_', subplotID, '_', year), #if 1m use subplot ID; 
+                                 which_size == 10 ~ paste0(contained_within_10),
+                                 which_size == 100 ~ paste0(contained_within_100)))
+
+  }
+  wide_df <- cover_df %>%
+    group_by(eventID, recode) %>%
+    summarise(mean_cov = mean(percentCover, na.rm = TRUE)) %>%
+    pivot_wider(names_from = recode, values_from = mean_cov, values_fill = 0) %>%
+    select(eventID, SOI) %>%
+    print()
+}
+
+
+#3 options to characterize the vegetation at the plot:
+#1) group all plants (coverTypeGeneral) (general = TRUE, species_only = FALSE)
+#2) use scientific name to separate all species (general = FALSE, species_only = FALSE)
+#3) percent cover (general = FALSE, species_only = TRUE)
+
+#make veg matrix, then characterize veg, which returns "loading_locs"
+#loadings of each species in each PC; score of each component in each subplot /plot
+
+make_veg_matrix <- function(general, species_only = FALSE #by default
+                            ) {
+  if (general == TRUE) {
+    group_summary <- cover_1m %>%
+      group_by(eventID, coverTypeGeneral) %>%
+      summarise(cov = sum(percentCover))
+    
+    group_summary_wide <- group_summary %>%
+      distinct(eventID, coverTypeGeneral, cov) %>%
+      group_by(eventID) %>%
+      pivot_wider(names_from = coverTypeGeneral,
+                  values_from = cov,
+                  values_fill = 0) %>%
+      ungroup() 
+    mat_gen <- group_summary_wide %>%
+      select(-eventID) %>%
+      as.matrix()
+    row.names(mat_gen) <- group_summary_wide$eventID
+    
+    return(mat_gen)
+  }
+  
+  if (general == FALSE) {
+   
+    group_summary <- cover_1m %>%
+      group_by(eventID, coverType) %>%
+      summarise(cov = sum(percentCover))
+    
+    if (species_only == TRUE) {
+      group_summary <- cover_1m %>%
+        filter(coverTypeGeneral == 'plants') %>%
+        group_by(eventID, contained_within_10, contained_within_100, coverType) %>%
+        summarise(cov = sum(percentCover))
+    }
+    group_summary_wide <- group_summary %>%
+      ungroup() %>%
+      distinct(eventID, coverType, cov) %>%
+      pivot_wider(names_from = coverType,
+                  values_from = cov,
+                  values_fill = 0) %>%
+      ungroup()
+    
+    mat_spec <- group_summary_wide %>%
+      select(-eventID) %>%
+      as.matrix()
+    row.names(mat_spec) <- group_summary_wide$eventID
+  
+    return(mat_spec)
+    }
+}
+
+characterize_veg <- function(general, species_only) {
+  input <- make_veg_matrix(general, species_only)
+  which_plant_deets <- input
+  vegdeets_pca <- pca(which_plant_deets, scale = TRUE)
+  subplot_locs <- vegdeets_pca$CA$u[,1:3] %>%
+    as.data.frame() %>%
+    mutate(subplot = rownames(vegdeets_pca$CA$u)) %>%
+    pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'subplot_loc')
+  #each species
+  plant_deets_load <- vegdeets_pca$CA$v[,1:3] %>% #22 x 22
+    as.data.frame() %>%
+    mutate(covtype = rownames(vegdeets_pca$CA$v)) %>%
+    pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'PC_val')
+  loads_locs <- plant_deets_load %>%
+    left_join(subplot_locs, relationship = 'many-to-many') %>%
+    mutate(subplot_veg_relationship = PC_val*subplot_loc) %>%
+    mutate(rel_cat = case_when(subplot_veg_relationship < -0.05 ~ 'strong negative',
+                               subplot_veg_relationship > -0.05 & subplot_veg_relationship < 0.05 ~ 'neutral',
+                               subplot_veg_relationship > 0.05 ~ 'strong positive'))
+  #how each covertype loads in the first 3 components of PCA:
+  loads_locs %>%
+    filter(PC_val > 0.2 | PC_val < -0.2) %>%
+    ggplot() +
+    geom_point(aes(x = covtype, y = PC_val, colour = PC)) +
+    geom_hline(yintercept = 0) +
+    theme_classic() +
+    facet_wrap(~PC, scales = 'free_x') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  #relationship between each covertype and plot
+  loads_locs %>%
+    ggplot() +
+    geom_point(aes(x = subplot, y = subplot_veg_relationship, colour = covtype)) +
+    #geom_label(aes(label = covtype)) +
+    theme_classic()
+  
+  return(loads_locs)
+}
+
+
+
 
 
 
@@ -438,222 +553,3 @@ ARID_Annual_Obs <- ARID_Obs %>%
   ungroup() %>%
   select(-mvals, -perccovs, -mean_val, -max_val, -max_bout, -mean_bout, -n_bouts, -n_remarks) %>%
   print()
-
-# Visualize and understand the distributions ?
-
-# Summarize: 
-ARID_Obs
-locationID, siteNumber habitat
-plotID subplotID boutNumber
-contained_within_100
-nativeStatusCode taxonRank  family
-establishmentMeans
-scientificName
-year
-eventID       
-genus 
-speciesEpithet
-divDataType == plantSpecies
-
-
-# Analysis of 1m plant cover, CPER 2024 ------------------------------------
-
-#this is every single 1m subplot from CPER 2024
-cover_1m <- ARID_Annual_Obs %>% #or can do ARID_Obs for multiple bouts!
-  filter(sampleSizeValue == 1) %>%
-  filter(locationID == 'CPER') %>%
-  filter(year == 2024) %>%
-  distinct(eventID, 
-           coverType, coverTypeGeneral, percentCover, 
-           contained_within_10, contained_within_100)
-
-cover_1m %>%
-  filter(coverType == 'soil') 
-unique(cover_1m$eventID)
-
-
-#three options: 
-
-#one, group all plants (coverTypeGeneral)
-percentCoverGeneral <- cover_1m %>%
-  group_by(eventID, coverTypeGeneral) %>%
-  summarise(cov = sum(percentCover))
-percentCoverGeneral_wide <- percentCoverGeneral %>%
-  distinct(eventID, coverTypeGeneral, cov) %>%
-  group_by(eventID) %>%
-  pivot_wider(names_from = coverTypeGeneral,
-              values_from = cov,
-              values_fill = 0) %>%
-  ungroup() 
-mat_gen <- percentCoverGeneral_wide %>%
-  select(-eventID) %>%
-  as.matrix()
-row.names(mat_gen) <- percentCoverGeneral_wide$eventID
-
-#two: don't group all plants and use scientific name
-percentCoverSpecific <- cover_1m %>%
-  group_by(eventID, coverType) %>%
-  summarise(cov = sum(percentCover))
-percentCoverSpecific_wide <- percentCoverSpecific %>%
-  distinct(eventID, coverType, cov) %>%
-  group_by(eventID) %>%
-  pivot_wider(names_from = coverType,
-              values_from = cov,
-              values_fill = 0) %>%
-  ungroup()
-mat_spec <- percentCoverSpecific_wide %>%
-  select(-eventID) %>%
-  as.matrix()
-row.names(mat_spec) <- percentCoverSpecific_wide$eventID
-
-
-percentCoverPlantSp <- cover_1m %>%
-  filter(coverTypeGeneral == 'plants') %>%
-  group_by(eventID, contained_within_10, contained_within_100, coverType) %>%
-  summarise(cov = sum(percentCover))
-percentCoverPlantSp_wide <- percentCoverPlantSp %>%
-  ungroup() %>%
-  distinct(eventID, coverType, cov) %>%
-  pivot_wider(names_from = coverType,
-              values_from = cov,
-              values_fill = 0) %>%
-  ungroup()
-mat_plantsp <- percentCoverPlantSp_wide %>%
-  select(-eventID) %>%
-  as.matrix()
-row.names(mat_plantsp) <- percentCoverPlantSp_wide$eventID
-
-# PCA: specific and general --------------------------------------------
-# Specific cover PCA ------------------------------------------------------
-spec_pca <- pca(mat_spec, scale = TRUE)
-
-#each subplot in component space:
-subplot_locs <- spec_pca$CA$u[,1:3] %>% #198 x 22
-  as.data.frame() %>%
-  mutate(subplot = rownames(spec_pca$CA$u)) %>%
-  pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'subplot_loc')
-#each species
-sp_load <- spec_pca$CA$v[,1:3] %>% #22 x 22
-  as.data.frame() %>%
-  mutate(covtype = rownames(spec_pca$CA$v)) %>%
-  pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'PC_val')
-loads_locs <- sp_load %>%
-  left_join(subplot_locs) %>%
-  mutate(subplot_sp_relationship = PC_val*subplot_loc) %>%
-  mutate(rel_cat = case_when(subplot_sp_relationship < -0.05 ~ 'strong negative',
-                             subplot_sp_relationship > -0.05 & subplot_sp_relationship < 0.05 ~ 'neutral',
-                             subplot_sp_relationship > 0.05 ~ 'strong positive'))
-#how each covertype loads in the first 3 components of PCA:
-loads_locs %>%
-  filter(PC_val > 0.2 | PC_val < -0.2) %>%
-  ggplot() +
-  geom_point(aes(x = covtype, y = PC_val, colour = PC)) +
-  geom_hline(yintercept = 0) +
-  theme_classic() +
-  facet_wrap(~PC, scales = 'free_x') +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-#PC1: + standing dead herbaceous; - soil; - Salsola, Plantago, Amaranthera?
-#PC2: only positive: litter, Sisymbrium altissium; less so vulpia octoflora, Elymus elymoides, Lappula occidentalis, Lepidium densiflorum.
-#PC3: most negative: lappula occidentalis, Sisymbrium altissium. lepidium densiflorum
-
-# + PC1: hella standing dead herbaceous, little soil, Salsola, Plantago, Amaranthera.
-# - PC1: hella soil and little standing dead herbaceous. Maybe also hella Salsola, Plantago, and Amaranthera?
-
-# + PC2: lots of litter and sisymbrium
-# - PC2: little litter and sisymbrium
-
-# + PC3: little lap occ, sisymbrium altissium, and lepidium densiflorum.
-# - PC3: lots of lap occ, sisymbrium altissium, and lepidium densiflorum.
-
-# General cover PCA -------------------------------------------------------
-gen_pca <- pca(mat_gen, scale = TRUE)
-
-#each subplot in component space:
-subplot_locs <- gen_pca$CA$u[,1:3] %>% #198 x 22
-  as.data.frame() %>%
-  mutate(subplot = rownames(gen_pca$CA$u)) %>%
-  pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'subplot_loc')
-#each species
-sp_load <- gen_pca$CA$v[,1:3] %>% #22 x 22
-  as.data.frame() %>%
-  mutate(covtype = rownames(gen_pca$CA$v)) %>%
-  pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'PC_val')
-loads_locs <- sp_load %>%
-  left_join(subplot_locs) %>%
-  mutate(subplot_sp_relationship = PC_val*subplot_loc) %>%
-  mutate(rel_cat = case_when(subplot_sp_relationship < -0.05 ~ 'strong negative',
-                             subplot_sp_relationship > -0.05 & subplot_sp_relationship < 0.05 ~ 'neutral',
-                             subplot_sp_relationship > 0.05 ~ 'strong positive'))
-#how each covertype loads in the first 3 components of PCA:
-loads_locs %>%
-  ggplot() +
-  geom_point(aes(x = covtype, y = PC_val, colour = PC)) +
-  geom_hline(yintercept = 0) +
-  theme_classic()
-
-# shows us that PC1 is strongly affected by... 1) soil (positively), 2) standing dead (negatively), plants (negatively), and 3) rock (positively)
-# PC2 is strongly affected by litter, wood (positively) and negatively with lichen and moss
-# PC3 affected by fungi (negatively), plants (positively)
-
-# + PC1 = hella soil, some rock; little standing dead or plants
-# - PC1 = lots of standing dead or plants
-
-# + PC2 = hella litter and wood, little lichen and moss
-# - PC2 = hella lichen and moss, little litter and wood
-
-# + PC3 = plants
-# - PC3 = fungi
-
-#relationship between each covertype and plot
-loads_locs %>%
-  ggplot() +
-  geom_point(aes(x = subplot, y = subplot_sp_relationship, colour = covtype)) +
-  #geom_label(aes(label = covtype)) +
-  theme_classic()
-
-# Fractional Cover: Soil --------------------------------------------------
-#characterizing dominant cover:
-soil_dom <- cover_1m %>%
-  mutate(coverTypeRecode = ifelse(coverType == 'soil', 'soil', 'other')) %>%
-  group_by(eventID, coverTypeRecode) %>%
-  summarise(totcov = sum(percentCover))
-soil_dom_summ <- soil_dom %>%
-  group_by(eventID) %>%
-  summarise(total = sum(totcov)) %>%
-  left_join(soil_dom) %>%
-  mutate(rel_cov = 100*totcov/total) %>%
-  select(eventID, coverTypeRecode, rel_cov) %>%
-  filter(coverTypeRecode == 'soil') %>%
-  arrange(desc(rel_cov)) %>%
-  print(n = 200)
-
-#use their soil number:
-actual_soil_cover <- cover_1m %>%
-  filter(coverType == 'soil') %>%
-  distinct(eventID, percentCover)
-actual_soil_cover
-
-# Visualize and understand the distributions 
-hist(actual_soil_cover$percentCover)
-#greatest frequency (~70 subplots with 10-20%)
-IQR(actual_soil_cover$percentCover)
-
-# Summarize: 
-# Whole plot, subplot size-specific analyses of % cover
-# relative frequency for plot and larger subplots
-
-
-# among (matrix rows) in terms of cover and composition, 
-#which is then used to characterize each organizational level: 
- # [a diagram of subplot, plot, site, domain, all NEON sites]
-#and what we're dealing w here...
-
-#a single site for now
-
-#output:
-#loadings of each species in each PC; score of each component in each subplot /. plot
-
-#show clustering by species groups hopefully
-
-#consider how this might translate to a map, spatial / grid patterns added to what we already see
