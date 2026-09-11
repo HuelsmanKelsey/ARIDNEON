@@ -1,0 +1,269 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Overview:
+This code maps and extracts HSI and RGB from the NEON site CPER
+
+CPER: "full" site, 2024 (tiles where there are also NEON TOS sampling plots)
+```{r}
+#input with paths is all produced tiffs of tiles:
+input_with_paths <- read.csv('CPER_2024_tiles.csv')
+hsi_list <- unique(input_with_paths$hsi_saved_path)
+rgb_list <- unique(input_with_paths$rgb_filepath)
+spbands_list <- unique(input_with_paths$spbands_saved_path)
+
+#mapping rgb
+input <- rgb_list %>% na.omit() #for every rgb tile file input
+#tiles_only = just map and save the tiles in site_tilelist; 
+# if tiles_only == FALSE, we also clip out PLOTS
+tiles_only <- TRUE
+site_tilelist <- c()
+
+foreach(t = 1:length(input),
+        .combine = rbind) %do% {
+          
+          this_tile <- terra::rast(input[[t]])
+          tile_extent <- ext(this_tile)
+            
+          if (tiles_only == TRUE) {
+            #saves a list of them for full site mapping
+            site_tilelist[[t]] <- this_tile
+          }
+          
+          #default map:
+          tilemap <- terra::plotRGB(this_tile) #r = 1, g = 2, b = 3 is default
+          
+          #dramatic map:
+          tilemap <- terra::plotRGB(this_tile, r=1, g=2, b=3, stretch="lin")
+          
+          
+          if (tiles_only == FALSE) {
+            
+            plots_projected <- terra::project(site_subplots_shp, this_tile) #can also use David's data here
+            plots_in_tile <- plots_projected[tile_extent]
+            
+            if (nrow(plots_in_tile) > 0) { #if there are plots in a tile, create lookup table
+              #create a translation between extraction ID and plotID
+              plot_lookup <- data.frame(
+                ID = 1:nrow(plots_in_tile), #we will make a dataframe with plot ID (just a number)
+                subplotID = plots_in_tile$subplotID, #the subplot and plot ID (from the dataframe)
+                plotID = plots_in_tile$plotID #so that we can reference which plot is which
+              )
+              
+              hello <- foreach(ID = nrow(plots_in_tile),
+                               .combine = rbind) %do% {
+                                 
+                                 this_plot <- plots_in_tile[ID,] #for each plot, numbered 1 to nrow
+                                 
+                                 this_plot_df <- as.data.frame(this_plot)
+                                 subplotID = this_plot_df$subplotID
+                                 
+                                 buff_size = 0.5*sqrt(this_plot_df$subpltSize) +2
+                                 buff_extent <- terra::ext(terra::buffer(this_plot, 
+                                                                         width = buff_size))
+                                 cropped_plot <- terra::crop(this_tile, buff_extent) #crop the map to just the buffered point
+                                 
+                                 terra::plotRGB(cropped_plot)
+                                 terra::plotRGB(cropped_plot, r = 1, g = 2, b = 3, stretch = 'lin') #plot the cropped plot
+                                 
+                                 this_plot_df
+                               }
+            } #plots in tile
+            hello
+          } #tiles only = FALSE
+          
+        } #each file
+
+#create full site rgb image:
+full_site_rgb10 <- terra::merge(terra::sprc(site_tilelist))
+full_site_dullrgb <- terra::plotRGB(full_site_rgb10)
+full_site_stretchrgb <- terra::plotRGB(full_site_rgb10, stretch = 'lin')
+
+```
+
+
+
+```{r}
+#need to create veg index with spbands_list:
+input <- spbands_list
+VI_list <- c() #initialize empty list
+#using spbands_list, make vegetation index rasters and an RGB composite: 
+foreach(t = 1:length(input)) %do% {
+  this_tile <- terra::rast(input[t])
+  tile_extent <- ext(this_tile)
+  
+    #make rasters
+    PRI_rast <- (this_tile[['NIR']] - this_tile[['green']]) / (this_tile[['NIR']] + this_tile[['green']])
+    NDVI_rast <- (this_tile[['NIR']] - this_tile[['red']]) / (this_tile[['NIR']] + this_tile[['red']] + 0.0001)
+    
+    NIRv_rast <- this_tile[['NIR']] * NDVI_rast
+    CCI_rast <- (this_tile[['PRI']] - this_tile[['red']]) / (this_tile[['PRI']] + this_tile[['red']])
+    
+    indices <- c(CCI_rast, NIRv_rast, PRI_rast)
+    names(indices) <- c("CCI", "NIRv", "PRI")
+
+    VI_list[[t]] <- indices  
+}
+
+  NIRv_col = colorRampPalette(c("white", "darkgreen"))(20)
+  PRI_col = colorRampPalette(c("white", "blue"))(20)
+  CCI_col = colorRampPalette(c("white", "red"))(20)
+
+input <- VI_list
+foreach(t = 1:length(input)) %do% {
+  this_tile <- VI_list[[t]]
+  terra::plot(this_tile$CCI, col = CCI_col, main = "CCI")
+  terra::plot(this_tile$NIRv, col = NIRv_col, main = "NIRv")
+  terra::plot(this_tile$PRI, col = PRI_col, main = 'PRI')
+
+  VI_rast <- terra::plotRGB(this_tile, r=1, g=2, b=3, stretch="lin")
+}
+
+#create fullsite vi map:
+full_site_vis <- terra::merge(terra::sprc(VI_list))
+terra::plotRGB(full_site_vis, r = 1, g = 2, b = 3, stretch = 'lin')
+```
+
+
+
+```{r}
+rgb_map_sampling_plot('CPER')
+```
+```{r}
+VI_sampling_plot( 'CPER')
+
+```
+
+```{r}
+
+cov_specific_char <- characterize_veg(general = FALSE, species_only = FALSE)
+
+#specific cover (mat_spec)
+  #PC1: + standing dead herbaceous; - soil; - Salsola, Plantago, Amaranthera?
+  #PC2: only positive: litter, Sisymbrium altissium; less so vulpia octoflora, Elymus elymoides, Lappula occidentalis, Lepidium densiflorum.
+  #PC3: most negative: lappula occidentalis, Sisymbrium altissium. lepidium densiflorum
+  
+  # + PC1: hella standing dead herbaceous, little soil, Salsola, Plantago, Amaranthera.
+  # - PC1: hella soil and little standing dead herbaceous. Maybe also hella Salsola, Plantago, and Amaranthera?
+  
+  # + PC2: lots of litter and sisymbrium
+  # - PC2: little litter and sisymbrium
+  
+  # + PC3: little lap occ, sisymbrium altissium, and lepidium densiflorum.
+  # - PC3: lots of lap occ, sisymbrium altissium, and lepidium densiflorum.
+  
+cov_specific_plotsums <- cov_specific_char %>%
+  mutate(plot = strtrim(subplot, 8)) %>%
+  group_by(plot, PC) %>%
+  summarise(plot_pc_loc = mean(subplot_loc))
+
+cov_specific_plotsums %>%
+    pivot_wider(names_from = PC, values_from = plot_pc_loc) %>%
+  ggtern(aes(x = PC1, y = PC2, z = PC3)) +
+  geom_point(aes(colour = plot), size = 3, alpha = 0.5) +
+  #xlim() +
+  #ylim() +
+  #zlim() +
+  theme_classic()
+
+print()
+```
+  mutate(relationship = ifelse(plot_pc_loc < 0, 'negative', 'positive'))
+  
+cov_specific_plotsums %>%
+  mutate(plot_pc_loc = abs(plot_pc_loc)) %>%
+  pivot_wider(names_from = PC, values_from = c(relationship, plot_pc_loc)) %>%
+  print()
+                
+  ggtern(aes(x = PC1, y = PC2, z = PC3)) +
+  geom_point(aes(colour = plot), size = 3, alpha = 0.5) +
+  theme_classic()
+
+posi_rels <- cov_specific_plotsums %>%
+  filter(relationship == 'positive') %>%
+neg_rels
+posi_rels
+```
+
+
+```{r}
+cov_gen_char <- characterize_veg(general = TRUE, species_only)
+
+```
+#general cover (mat_gen)
+  # shows us that PC1 is strongly affected by... 1) soil (positively), 2) standing dead (negatively), plants (negatively), and 3) rock (positively)
+  # PC2 is strongly affected by litter, wood (positively) and negatively with lichen and moss
+  # PC3 affected by fungi (negatively), plants (positively)
+  
+  # + PC1 = hella soil, some rock; little standing dead or plants
+  # - PC1 = lots of standing dead or plants
+  
+  # + PC2 = hella litter and wood, little lichen and moss
+  # - PC2 = hella lichen and moss, little litter and wood
+  
+  # + PC3 = plants
+  # - PC3 = fungi
+  
+```{r} 
+# capturing vegetation “vibe” using % cover
+cov_species_char <- characterize_veg(general = FALSE, species_only = TRUE)
+```
+
+
+#show clustering by species groups hopefully
+
+#consider how this might translate to a map, spatial / grid patterns added to what we already see
+
+  # Summarize: 
+  # Whole plot, subplot size-specific analyses of % cover
+  # relative frequency for plot and larger subplots
+  
+  
+  # among (matrix rows) in terms of cover and composition, 
+  #which is then used to characterize each organizational level: 
+  # [a diagram of subplot, plot, site, domain, all NEON sites]
+  #and what we're dealing w here...
+  
+
+# vegetation vibe: PA, % cover
+
+#whole plot summary of subplots
+
+# subplot specific pairings
+
+# capturing vegetation "vibe" using PA
+
+```
+
+
+
+
+```{r}
+
+extracted_100m <- extract_spectra(hsi_list, 'CPER', 100)
+
+  terra::plot(plots_in_tile, add = TRUE, lwd = 3, col = 'white')
+  
+#layout for 1, 1, 2, 3; 1, 1, 4, 5
+  layout_matrix <- matrix(c(1, 1, 2, 3,
+                          1, 1, 4, 5), 
+                        nrow = 2, byrow = TRUE)
+
+# 2. Apply the layout
+layout(layout_matrix)
+
+
+terra::plotRGB(VI_rast, r = 1, g = 2, b = 3, stretch = 'lin')
+terra::plot(plots_in_tile, add = TRUE, lwd = 3, col = 'white')
+
+```
+These are DATA-RICH maps of tiles, where the R channel is CCI, G is NIRv, and B is PRI
+That means if something is very GREEN it has high NIRv
+If it's very red, high CCI, very blue, high PRI; 
+CCI = long-term stress indicator OR senescence
+PRI = additional stress indicator but can be shorter or longer term.
+
+The white squares are where sampling plot locations are marked in the tile.
+The smallest sized squares are veg plots
