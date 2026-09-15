@@ -62,7 +62,7 @@ site_veg <- ARID_veg %>%
 # Crosswalk / interpret the data
 # Creating a single Event dataframe ---------------------------------------
 Event_subplots <- site_veg_subs %>%
-  select(domainID, 
+  dplyr::select(domainID, 
          siteID, 
          endDate, 
          decimalLatitude, 
@@ -87,7 +87,7 @@ Event <- site_veg %>%
          otherVariablesPresent = NA,
          otherVariables = NA,
          percentCover = NA) %>%
-  select(names(Event_subplots)) %>%
+  dplyr::select(names(Event_subplots)) %>%
   rbind(Event_subplots) %>% 
   
   #now Event_subplots is in here, so we start renaming, etc.
@@ -127,7 +127,7 @@ Event <- site_veg %>%
       sampleSizeValue == 1 ~ paste0(plotID, '_', str_replace(subplotID, '_1_', '_10_'), '_', year),
       sampleSizeValue == 10 ~ paste0(plotID, '_', subplotID, '_', year))
   ) %>% 
-  select(
+  dplyr::select(
     siteNumber,
     locationID, 
     habitat,
@@ -152,7 +152,7 @@ Event <- site_veg %>%
 
 # Creating a single Occurrence dataframe ---------------------------------------
 Occurrence_subplots <- site_veg_subs %>%
-  select(uid, endDate, plotID, subplotID, boutNumber, release, publicationDate, 
+  dplyr::select(uid, endDate, plotID, subplotID, boutNumber, release, publicationDate, 
          samplingImpractical, samplingImpracticalRemarks, samplingProtocolVersion,
          otherVariablesPresent, divDataType, otherVariables, percentCover,  #divDataType is plantSpecies, otherVariables
          heightPlantOver300cm, morphospeciesID, morphospeciesIDRemarks, 
@@ -167,7 +167,7 @@ Occurrence <- site_veg %>%
          percentCover = NA,
          heightPlantOver300cm = NA, 
          heightPlantSpecies = NA) %>%
-  select(names(Occurrence_subplots)) %>%
+  dplyr::select(names(Occurrence_subplots)) %>%
   rbind(Occurrence_subplots) %>% 
   # dplyr::filter(
   #   targetTaxaPresent == "Y" &
@@ -276,7 +276,9 @@ ARID_Obs <- Occurrence %>%
 
 # Make PA dataframe:
 #if which_size is null it will do whole plot; if which size isn't, it will do the size provided (1, 10, or 100)
-make_PA_df <- function(which_site, which_year, which_species, 
+make_PA_df <- function(which_site, 
+                       which_year, 
+                       which_species, 
                        which_size = NULL,
                        matrix = FALSE) #default
   {
@@ -303,8 +305,7 @@ make_PA_df <- function(which_site, which_year, which_species,
                                 scientificName != which_species ~ 'other'),
              eventID = case_when(which_size == 1 ~ paste0(plotID, '_', subplotID, '_', year), #if 1m use subplot ID; 
                                  which_size == 10 ~ paste0(contained_within_10),
-                                 which_size == 100 ~ paste0(contained_within_100))) %>%
-      print()
+                                 which_size == 100 ~ paste0(contained_within_100)))
   }
   
   wide_df <- wide_df %>%
@@ -313,13 +314,12 @@ make_PA_df <- function(which_site, which_year, which_species,
     na.omit() %>%
     pivot_wider(names_from = recode, values_from = n, values_fill = 0) %>%
     ungroup() %>%
-    select(eventID, SOI, other) %>%
-    print()
+    dplyr::select(eventID, SOI, other)
   
   #if want a matrix:
   if (matrix == TRUE) {
     PA_mat <- wide_df %>%
-      select(SOI, other) %>%
+      dplyr::select(SOI, other) %>%
       as.matrix()
     rownames(PA_mat) <- wide_df$eventID
     
@@ -328,6 +328,54 @@ make_PA_df <- function(which_site, which_year, which_species,
   return(wide_df)
 }
 
+
+
+#Can use make_PA_df to also characterize plot or subplot, but will need to make it so there is a which_species == NULL option
+#because we want to characterize by everything that is there, not just whether one species is present or absent
+
+# PA_sp_characterization <- function(which_site, which_year, which_species, which_size, matrix) {
+#   which_plant_deets <- make_PA_df(which_site, 
+#                                   which_year, 
+#                                   which_species = NULL, 
+#                                   which_size, 
+#                                   matrix = TRUE)
+#   vegdeets_pca <- vegan::pca(which_plant_deets, scale = TRUE)
+#   subplot_locs <- vegdeets_pca$CA$u[,1:3] %>%
+#     as.data.frame() %>%
+#     mutate(subplot = rownames(vegdeets_pca$CA$u)) %>%
+#     pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'subplot_loc')
+#   #each species
+#   plant_deets_load <- vegdeets_pca$CA$v[,1:3] %>% #22 x 22
+#     as.data.frame() %>%
+#     mutate(covtype = rownames(vegdeets_pca$CA$v)) %>%
+#     pivot_longer(PC1:PC3, names_to = 'PC', values_to = 'PC_val')
+#   loads_locs <- plant_deets_load %>%
+#     left_join(subplot_locs, relationship = 'many-to-many') %>%
+#     mutate(subplot_veg_relationship = PC_val*subplot_loc) %>%
+#     mutate(rel_cat = case_when(subplot_veg_relationship < -0.05 ~ 'strong negative',
+#                                subplot_veg_relationship > -0.05 & subplot_veg_relationship < 0.05 ~ 'neutral',
+#                                subplot_veg_relationship > 0.05 ~ 'strong positive'))
+#   #how each covertype loads in the first 3 components of PCA:
+#   loads_locs %>%
+#     filter(PC_val > 0.2 | PC_val < -0.2) %>%
+#     ggplot() +
+#     geom_point(aes(x = covtype, y = PC_val, colour = PC)) +
+#     geom_hline(yintercept = 0) +
+#     theme_classic() +
+#     facet_wrap(~PC, scales = 'free_x') +
+#     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#   
+#   #relationship between each covertype and plot
+#   loads_locs %>%
+#     ggplot() +
+#     geom_point(aes(x = subplot, y = subplot_veg_relationship, colour = covtype)) +
+#     #geom_label(aes(label = covtype)) +
+#     theme_classic()
+#   
+#   return(loads_locs)
+# }
+
+  
 # explore and make % cover dataframe:
 
 # summary of % cover at each coverlocation (ground, understory, overstory)
@@ -337,6 +385,7 @@ tot_cov_by_group <- ARID_Obs %>%
   group_by(subplotID, plotID, year, boutNumber, coverLocation) %>% 
   summarise(totcov = sum(percentCover)) 
 
+#caveat #1: how % cover is reported:
 tot_cov_by_group
 
 tot_cov_by_subplot <- tot_cov_by_group %>%
@@ -344,7 +393,6 @@ tot_cov_by_subplot <- tot_cov_by_group %>%
   summarise(totcov2 = sum(totcov))
 
 tot_cov_by_subplot
-
 
 #percent cover of species or cover of interest
 make_perccov_df <- function(which_site, 
@@ -383,21 +431,30 @@ make_perccov_df <- function(which_site,
     group_by(eventID, recode) %>%
     summarise(mean_cov = mean(percentCover, na.rm = TRUE)) %>%
     pivot_wider(names_from = recode, values_from = mean_cov, values_fill = 0) %>%
-    select(eventID, SOI) %>%
+    dplyr::select(eventID, SOI) %>%
     print()
 }
 
 
-#3 options to characterize the vegetation at the plot:
+#3 options to characterize the vegetation at the plot using 1m percent cover data:
 #1) group all plants (coverTypeGeneral) (general = TRUE, species_only = FALSE)
-#2) use scientific name to separate all species (general = FALSE, species_only = FALSE)
-#3) percent cover (general = FALSE, species_only = TRUE)
+#2) use scientific name to separate all species but include % cover (general = FALSE, species_only = FALSE)
+#3) percent cover of plants only (general = FALSE, species_only = TRUE)
 
 #make veg matrix, then characterize veg, which returns "loading_locs"
 #loadings of each species in each PC; score of each component in each subplot /plot
 
-make_veg_matrix <- function(general, species_only = FALSE #by default
+make_perccov_matrix <- function(which_site, which_year, general, species_only = FALSE #by default
                             ) {
+  
+  cover_1m <- ARID_Obs %>% #or can do ARID_Obs for multiple bouts!
+    filter(sampleSizeValue == 1) %>%
+    filter(locationID == which_site) %>%
+    filter(year == which_year) %>%
+    distinct(eventID, plotID, subplotID, boutNumber, year,
+             coverType, coverTypeGeneral, percentCover, 
+             contained_within_10, contained_within_100)
+  
   if (general == TRUE) {
     group_summary <- cover_1m %>%
       group_by(eventID, coverTypeGeneral) %>%
@@ -411,7 +468,7 @@ make_veg_matrix <- function(general, species_only = FALSE #by default
                   values_fill = 0) %>%
       ungroup() 
     mat_gen <- group_summary_wide %>%
-      select(-eventID) %>%
+      dplyr::select(-eventID) %>%
       as.matrix()
     row.names(mat_gen) <- group_summary_wide$eventID
     
@@ -439,7 +496,7 @@ make_veg_matrix <- function(general, species_only = FALSE #by default
       ungroup()
     
     mat_spec <- group_summary_wide %>%
-      select(-eventID) %>%
+      dplyr::select(-eventID) %>%
       as.matrix()
     row.names(mat_spec) <- group_summary_wide$eventID
   
@@ -447,10 +504,11 @@ make_veg_matrix <- function(general, species_only = FALSE #by default
     }
 }
 
-characterize_veg <- function(general, species_only) {
-  input <- make_veg_matrix(general, species_only)
+
+characterize_veg <- function(which_site, which_year, general, species_only) {
+  input <- make_perccov_matrix(which_site, which_year, general, species_only)
   which_plant_deets <- input
-  vegdeets_pca <- pca(which_plant_deets, scale = TRUE)
+  vegdeets_pca <- vegan::pca(which_plant_deets, scale = TRUE)
   subplot_locs <- vegdeets_pca$CA$u[,1:3] %>%
     as.data.frame() %>%
     mutate(subplot = rownames(vegdeets_pca$CA$u)) %>%
@@ -487,9 +545,30 @@ characterize_veg <- function(general, species_only) {
 }
 
 
+# workflow: ---------------------------------------------------------------
+
+which_site <- 'CPER' #4 letter NEON code
+which_rast <- 'hsi' #or rgb
+which_size <- 1
+
+# workflow: 2020 ----------------------------------------------------------
+#TBD because of multiple bouts
+
+# workflow: 2021 ----------------------------------------------------------
+which_year <- 2021 
+CPER_spectra_2021 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
+CPER_gen_cover_2021 <- make_perccov_matrix(which_site, which_year, general = TRUE, species_only = FALSE)
+CPER_spec_cover_2021 <- make_perccov_matrix(which_site, which_year, general = FALSE, species_only = FALSE)
+
+# workflow: 2024 ----------------------------------------------------------
+which_year <- 2024 
+CPER_spectra_2024 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
+CPER_gen_cover_2024 <- make_perccov_matrix(which_site, which_year, general = TRUE, species_only = FALSE)
+CPER_spec_cover_2024 <- make_perccov_matrix(which_site, which_year, general = FALSE, species_only = FALSE)
 
 
 
+renamed make_veg_matrix to make_perccov_matrix to distinguish from PA-based matrix
 
 
 
@@ -500,6 +579,8 @@ ARID_Obs %>%
   summarise(n_bouts = n_distinct(boutNumber)) %>%
   filter(n_bouts > 1) %>% 
   distinct(siteNumber, year, n_bouts)
+
+#only one year with two veg bouts??
 
 #ANNUAL Summary: simplifying multiple bouts per year by taking max val, just to characterize overall
 ARID_Annual_Obs <- ARID_Obs %>%
@@ -551,5 +632,5 @@ ARID_Annual_Obs <- ARID_Obs %>%
     eventID = parentEventID,
     parentEventID = paste0(stringr::str_sub(parentEventID, 1, 8), '_', year)) %>%
   ungroup() %>%
-  select(-mvals, -perccovs, -mean_val, -max_val, -max_bout, -mean_bout, -n_bouts, -n_remarks) %>%
+  dplyr::select(-mvals, -perccovs, -mean_val, -max_val, -max_bout, -mean_bout, -n_bouts, -n_remarks) %>%
   print()
