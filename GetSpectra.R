@@ -16,6 +16,7 @@ library('tidyr')
 library('dplyr')
 library('ggplot2')
 library('lubridate')
+library('stringr')
 
 #spatial data
 library('sf')                 
@@ -40,11 +41,6 @@ library('doParallel')
 library('foreach')
 
 
-# Choose a site/location and open or request from API to download  -------
-#     Ends w check files exist and outputs a list of files
-
-which_site <- 'CPER' #4 letter NEON code
-which_year <- 2024 #there will be more... see next section
 
 # First see what's available ----------------------------------------------
 get_prod_avail <- function(which_site, which_dp, BRDF = FALSE) {
@@ -147,7 +143,7 @@ check_dims <- function(which_site) {
     print(paste('all', n_tiles_fr_obs, 'tiles have TOS plots :)'))
   }
 }
-
+avail_file_list(which_site, 2020) %>% distinct(specmonth)
 home <- '/Users/khuelsma/'
 avail_file_list <- function(which_site, 
                            which_year = NULL,
@@ -272,8 +268,8 @@ avail_file_list <- function(which_site,
   } #each tile year
 }
 
-avail_site_files <- avail_file_list('CPER', 2024)
-
+avail_site_files <- avail_file_list('CPER', 2020)
+avail_site_files$specmonth
 #make a wv dataframe if needed:
 get_wvs <- function(which_site, which_year) {
   path <- avail_site_files[1,]$h5_filepath
@@ -478,12 +474,6 @@ input_with_paths <- map_site_tiles('CPER', 2024)
 #IF YOU MADE IT THIS FAR, THE TILES ARE DOWNLOADED AND YOU CAN OPEN THEM
 
 
-#workflow to extract spectra:
-which_site <- 'CPER'
-
-input_with_paths <- read.csv('CPER_2024_tiles.csv')
-hsi_list <- unique(input_with_paths$hsi_saved_path)
-rgb_list <- unique(input_with_paths$rgb_filepath)
 
 #the function version:
 get_site_subplots <- function(which_site, which_size) {
@@ -508,7 +498,6 @@ get_site_subplots <- function(which_site, which_size) {
   }
   return(subs)
 }
-get_site_subplots('CPER', 100)
 
 # extract_subplot_spectra opens files from list and extract necessary info, 
 #inputs are:
@@ -517,8 +506,21 @@ get_site_subplots('CPER', 100)
 #2) A subplot list of particular sizes: get_site_subplots(which_site, which_size)
 #which_size = 1, 10, 100
 
-extract_subplot_spectra <- function(which_rast, which_site, which_size) {
-  input <- which_rast
+extract_subplot_spectra <- function(which_rast, which_site, which_year, which_size) {
+  input_with_paths <- map_site_tiles(which_site, which_year)
+  
+  if (which_rast == 'hsi') {
+    input <- input_with_paths %>%
+      distinct(hsi_saved_path)
+    raster_list <- unique(input$hsi_saved_path)
+  }
+  
+  if (which_rast == 'rgb') {
+    input <- input_with_paths %>%
+      distinct(rgb_filepath)
+    raster_list <- unique(input$rgb_filepath)
+  }
+  input <- raster_list
   which_subplots <- get_site_subplots(which_site, which_size)
 
   #for each tile from input
@@ -558,3 +560,25 @@ extract_subplot_spectra <- function(which_rast, which_site, which_size) {
     }
   return(extracted)
 }
+
+
+#1) which_rast = hsi_list, rgb_list, spbands_list
+#2) which_size = 1, 10, 100
+
+which_site <- 'CPER' #4 letter NEON code
+which_rast <- 'hsi' #or rgb
+which_size <- 1
+# workflow: 2020 ----------------------------------------------------------
+which_year <- 2020 #there will be more... see next section
+extracted_spectra_2020 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
+
+# workflow: 2021 ----------------------------------------------------------
+which_year <- 2021 #there will be more... see next section
+extracted_spectra_2021 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
+
+# workflow: 2024 ----------------------------------------------------------
+which_year <- 2024 #there will be more... see next section
+extracted_spectra_2024 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
+
+
+
