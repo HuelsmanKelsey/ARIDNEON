@@ -120,12 +120,12 @@ Event <- site_veg %>%
     
     #adding all smaller scale occurrences to broader ones
     contained_within_100 = case_when(
-      sampleSizeValue == 100 ~ paste0(plotID, '_', subplotID, '_', year),
-      sampleSizeValue == 10 ~ paste0(plotID, '_', as.character(strtrim(subplotID, 5)), '0', '_', year),
-      sampleSizeValue == 1 ~ paste0(plotID, '_', strtrim(subplotID, 4), '00', '_', year)),
+      sampleSizeValue == 100 ~ paste0(plotID, '_', subplotID, '_', year, '_', boutNumber),
+      sampleSizeValue == 10 ~ paste0(plotID, '_', as.character(strtrim(subplotID, 5)), '0', '_', year, , '_', boutNumber),
+      sampleSizeValue == 1 ~ paste0(plotID, '_', strtrim(subplotID, 4), '00', '_', year, '_', boutNumber)),
     contained_within_10 = case_when(
-      sampleSizeValue == 1 ~ paste0(plotID, '_', str_replace(subplotID, '_1_', '_10_'), '_', year),
-      sampleSizeValue == 10 ~ paste0(plotID, '_', subplotID, '_', year))
+      sampleSizeValue == 1 ~ paste0(plotID, '_', str_replace(subplotID, '_1_', '_10_'), '_', year, '_', boutNumber),
+      sampleSizeValue == 10 ~ paste0(plotID, '_', subplotID, '_', year, '_', boutNumber))
   ) %>% 
   dplyr::select(
     siteNumber,
@@ -289,7 +289,7 @@ make_PA_df <- function(which_site,
       distinct(plotID, boutNumber, year, scientificName) %>%
       mutate(recode = case_when(scientificName == which_species ~ 'SOI',
                                 scientificName != which_species ~ 'other'),
-             eventID = paste0(plotID, '_', year))
+             eventID = paste0(plotID, '_', year, '_', boutNumber))
   }
 
   if (!is.null(which_size)) { 
@@ -303,7 +303,7 @@ make_PA_df <- function(which_site,
       distinct(plotID, subplotID, sampleSizeValue, contained_within_10, contained_within_100, boutNumber, year, scientificName) %>%
       mutate(recode = case_when(scientificName == which_species ~ 'SOI',
                                 scientificName != which_species ~ 'other'),
-             eventID = case_when(which_size == 1 ~ paste0(plotID, '_', subplotID, '_', year), #if 1m use subplot ID; 
+             eventID = case_when(which_size == 1 ~ paste0(plotID, '_', subplotID, '_', year, '_', boutNumber), #if 1m use subplot ID; 
                                  which_size == 10 ~ paste0(contained_within_10),
                                  which_size == 100 ~ paste0(contained_within_100)))
   }
@@ -329,6 +329,7 @@ make_PA_df <- function(which_site,
 }
 
 
+make_PA_df('CPER', 2021, 'soil', which_size = 1, matrix = FALSE)
 
 #Can use make_PA_df to also characterize plot or subplot, but will need to make it so there is a which_species == NULL option
 #because we want to characterize by everything that is there, not just whether one species is present or absent
@@ -407,14 +408,13 @@ make_perccov_df <- function(which_site,
     filter(year == which_year) %>%
     distinct(eventID, plotID, subplotID, boutNumber, year,
              coverType, coverTypeGeneral, percentCover, 
-             contained_within_10, contained_within_100) %>%
-    print()
+             contained_within_10, contained_within_100)
   
   if (is.null(which_size)) { #default for whole plot
     cover_df <- cover_1m %>%
       mutate(recode = case_when(coverType == which_cover ~ 'SOI',
                                 coverType != which_cover ~ 'other'),
-             eventID = paste0(plotID, '_', year))
+             eventID = paste0(plotID, '_', year, '_', boutNumber))
   }
   
   if (!is.null(which_size)) { 
@@ -422,16 +422,17 @@ make_perccov_df <- function(which_site,
         mutate(recode = case_when(coverType == which_cover ~ 'SOI',
                                   coverType != which_cover ~ 'other'),
              
-               eventID = case_when(which_size == 1 ~ paste0(plotID, '_', subplotID, '_', year), #if 1m use subplot ID; 
+               eventID = case_when(which_size == 1 ~ paste0(plotID, '_', subplotID, '_', year, '_', boutNumber), #if 1m use subplot ID; 
                                  which_size == 10 ~ paste0(contained_within_10),
                                  which_size == 100 ~ paste0(contained_within_100)))
-
   }
+  
   wide_df <- cover_df %>%
     group_by(eventID, recode) %>%
     summarise(mean_cov = mean(percentCover, na.rm = TRUE)) %>%
     pivot_wider(names_from = recode, values_from = mean_cov, values_fill = 0) %>%
     dplyr::select(eventID, SOI) %>%
+    mutate(which_cover = paste(which_cover)) %>%
     print()
 }
 
@@ -506,8 +507,7 @@ make_perccov_matrix <- function(which_site, which_year, general, species_only = 
 
 
 characterize_veg <- function(which_site, which_year, general, species_only) {
-  input <- make_perccov_matrix(which_site, which_year, general, species_only)
-  which_plant_deets <- input
+  which_plant_deets <- make_perccov_matrix(which_site, which_year, general, species_only)
   vegdeets_pca <- vegan::pca(which_plant_deets, scale = TRUE)
   subplot_locs <- vegdeets_pca$CA$u[,1:3] %>%
     as.data.frame() %>%
@@ -544,33 +544,24 @@ characterize_veg <- function(which_site, which_year, general, species_only) {
   return(loads_locs)
 }
 
+veg_char_2021 <- characterize_veg('CPER', 2021, general = TRUE, species_only = FALSE)
+veg_char_2021 %>% group_by(PC, subplot, covtype, rel_cat) %>% summarise(n = n()) %>%
+  filter(rel_cat != 'neutral') %>%
+  group_by(PC, subplot, rel_cat) %>%
+  summarise(covs = list(unique(covtype))) %>%
+  ungroup() %>%
+  mutate(rel_cat_simplified = ifelse(rel_cat == 'strong negative', 'neg', 'pos'),
+         summary = paste(rel_cat_simplified, covs)) %>%
+  select(PC, subplot, summary)
 
-# workflow: ---------------------------------------------------------------
+#plot: CPER 1
+#3 subplots: 40 1 1, 40 1 3, 41 4 1, -litter, plants, + standing dead; generally the vibe across the plot
 
-which_site <- 'CPER' #4 letter NEON code
-which_rast <- 'hsi' #or rgb
-which_size <- 1
+#CPER3, 1 subplot: neg standing dead, positive plants. 
 
-# workflow: 2020 ----------------------------------------------------------
-#TBD because of multiple bouts
+#CPER 5: positive litter, plants, wood
 
-# workflow: 2021 ----------------------------------------------------------
-which_year <- 2021 
-CPER_spectra_2021 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
-CPER_gen_cover_2021 <- make_perccov_matrix(which_site, which_year, general = TRUE, species_only = FALSE)
-CPER_spec_cover_2021 <- make_perccov_matrix(which_site, which_year, general = FALSE, species_only = FALSE)
-
-# workflow: 2024 ----------------------------------------------------------
-which_year <- 2024 
-CPER_spectra_2024 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
-CPER_gen_cover_2024 <- make_perccov_matrix(which_site, which_year, general = TRUE, species_only = FALSE)
-CPER_spec_cover_2024 <- make_perccov_matrix(which_site, which_year, general = FALSE, species_only = FALSE)
-
-
-
-renamed make_veg_matrix to make_perccov_matrix to distinguish from PA-based matrix
-
-
+veg_char_2024 <- characterize_veg('CPER', 2024, general = TRUE, species_only = FALSE)
 
 
 #Looking at bouts within a year:
