@@ -143,7 +143,6 @@ check_dims <- function(which_site) {
     print(paste('all', n_tiles_fr_obs, 'tiles have TOS plots :)'))
   }
 }
-avail_file_list(which_site, 2020) %>% distinct(specmonth)
 home <- '/Users/khuelsma/'
 avail_file_list <- function(which_site, 
                            which_year = NULL,
@@ -268,8 +267,7 @@ avail_file_list <- function(which_site,
   } #each tile year
 }
 
-avail_site_files <- avail_file_list('CPER', 2020)
-avail_site_files$specmonth
+
 #make a wv dataframe if needed:
 get_wvs <- function(which_site, which_year) {
   path <- avail_site_files[1,]$h5_filepath
@@ -299,8 +297,6 @@ get_wvs <- function(which_site, which_year) {
     select(year, wv, band)
   return(kept_bands)
 }
-kept_bands <- get_wvs('CPER', 2024)
-
 home <- '/Users/khuelsma/'
 
 #map_site_tiles will return a dataframe that gives you easy to open .tifs of full tiles: 
@@ -489,24 +485,26 @@ get_site_subplots <- function(which_site, which_size) {
   
   if (which_size == 100) {
     subs <- subset(site_subplots_shp, stringr::str_detect(site_subplots_shp$subplotID, paste0('_', which_size)))
-    print(subs)
+    return(subs)
   }
   
   if (which_size == 1 | which_size == 10) {
     subs <- subset(site_subplots_shp, stringr::str_detect(site_subplots_shp$subplotID, paste0('_', which_size, '_')))
-    print(subs)
+    return(subs)
   }
-  return(subs)
 }
 
+em <- get_site_subplots('CPER', 100)
 # extract_subplot_spectra opens files from list and extract necessary info, 
 #inputs are:
 #1) a file list of tiffs: hsi_list or rgb_list or spbands_list
 #which_rast = hsi_list, rgb_list, spbands_list
 #2) A subplot list of particular sizes: get_site_subplots(which_site, which_size)
 #which_size = 1, 10, 100
+hello <- extract_subplot_spectra('hsi', 'CPER', 2021, 1, which_buff = 0)
+hello_buff <- extract_subplot_spectra('hsi', 'CPER', 2021, 1, which_buff = 2)
 
-extract_subplot_spectra <- function(which_rast, which_site, which_year, which_size) {
+extract_subplot_spectra <- function(which_rast, which_site, which_year, which_size, which_buff) {
   input_with_paths <- map_site_tiles(which_site, which_year)
   
   if (which_rast == 'hsi') {
@@ -520,6 +518,7 @@ extract_subplot_spectra <- function(which_rast, which_site, which_year, which_si
       distinct(rgb_filepath)
     raster_list <- unique(input$rgb_filepath)
   }
+  
   input <- raster_list
   which_subplots <- get_site_subplots(which_site, which_size)
 
@@ -528,57 +527,44 @@ extract_subplot_spectra <- function(which_rast, which_site, which_year, which_si
     img = 1:length(input),
     .combine = rbind) %do% {
       
+      #for rgb: this_tile <- input[[img]]
+      
+      #for hsi:
       this_tile <- terra::rast(input[[img]])
       tile_extent <- ext(this_tile)
-      plots_projected <- terra::project(which_subplots, this_tile) #can also use David's data here
-      plots_in_tile <- plots_projected[tile_extent]
-      
-      if (nrow(plots_in_tile) > 0) {
-        extracted_tile_plots <- foreach( #plots are really subplots
-          plot = 1:nrow(plots_in_tile),
+      subplots_projected <- terra::project(which_subplots, this_tile) #can also use David's data here
+      subplots_in_tile <- subplots_projected[tile_extent]
+
+      if (nrow(subplots_in_tile) > 0) {
+        extracted_subplots <- foreach( #plots are really subplots
+          subplot = 1:nrow(subplots_in_tile),
           .combine = rbind) %do% {
-            this_plot <- plots_in_tile[plot,] #for each plot, numbered 1 to nrow
-            this_plot_df <- as.data.frame(this_plot)
-            plotID = this_plot_df$plotID
-            subplotID = this_plot_df$subplotID
             
-            #square root the size (area), cut in half and add 2m
-            buff_size = 0.5*sqrt(this_plot_df$subpltSize) +2
-            buff_extent <- terra::ext(terra::buffer(this_plot, 
-                                                    width = buff_size))
+            this_subplot <- subplots_in_tile[subplot,] #for each subplot, numbered 1 to nrow
+            this_subplot_df <- as.data.frame(this_subplot)
+            plotID = this_subplot_df$plotID
+            subplotID = this_subplot_df$subplotID
+            size = this_subplot$subpltSize
+            #square root the size (area), cut in half
+            subplot_size = 0.5*sqrt(size)
+            buff_size = which_buff #set as whatever; can include as an argument
+            buff_width = subplot_size + buff_size
+            buff_extent <- terra::ext(terra::buffer(this_subplot, 
+                                                    width = buff_width))
             subplot_metrics <- terra::extract(this_tile, 
                                               buff_extent,
                                               xy = TRUE,
                                               cells = TRUE) %>%
-              cross_join(this_plot_df) %>%
-              mutate(eventID = paste0(plotID, '_', subplotID, '_', which_year))
+              cross_join(this_subplot_df) %>%
+              
+              #making up bout number for this one
+              mutate(eventID = paste0(plotID, '_', subplotID, '_', which_year, '_', 1))
             
-            subplot_metrics #gets rbinded
+            #subplot_metrics #gets rbinded
           }
       }
-      extracted_tile_plots #gets rbinded
+      #extracted_subplots #gets rbinded
     }
-  return(extracted)
+  #extracted
 }
-
-
-#1) which_rast = hsi_list, rgb_list, spbands_list
-#2) which_size = 1, 10, 100
-
-which_site <- 'CPER' #4 letter NEON code
-which_rast <- 'hsi' #or rgb
-which_size <- 1
-# workflow: 2020 ----------------------------------------------------------
-which_year <- 2020 #there will be more... see next section
-extracted_spectra_2020 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
-
-# workflow: 2021 ----------------------------------------------------------
-which_year <- 2021 #there will be more... see next section
-extracted_spectra_2021 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
-
-# workflow: 2024 ----------------------------------------------------------
-which_year <- 2024 #there will be more... see next section
-extracted_spectra_2024 <- extract_subplot_spectra(which_rast, which_site, which_year, which_size)
-
-
 
