@@ -328,7 +328,6 @@ make_PA_df <- function(which_site,
   return(wide_df)
 }
 
-
 make_PA_df('CPER', 2021, 'soil', which_size = 1, matrix = FALSE)
 
 #Can use make_PA_df to also characterize plot or subplot, but will need to make it so there is a which_species == NULL option
@@ -381,15 +380,17 @@ make_PA_df('CPER', 2021, 'soil', which_size = 1, matrix = FALSE)
 
 # summary of % cover at each coverlocation (ground, understory, overstory)
 tot_cov_by_group <- ARID_Obs %>% 
-  filter(year == which_year) %>%
   filter(sampleSizeValue == 1) %>%
   group_by(subplotID, plotID, year, boutNumber, coverLocation) %>% 
   summarise(totcov = sum(percentCover)) 
 
+years_of_interest <- tot_cov_by_group %>%
+  filter(year == 2021 | year == 2024)
+
 #caveat #1: how % cover is reported:
 tot_cov_by_group
 
-tot_cov_by_subplot <- tot_cov_by_group %>%
+tot_cov_by_subplot <- years_of_interest %>%
   group_by(subplotID, plotID, boutNumber, year) %>%
   summarise(totcov2 = sum(totcov))
 
@@ -544,24 +545,37 @@ characterize_veg <- function(which_site, which_year, general, species_only) {
   return(loads_locs)
 }
 
-veg_char_2021 <- characterize_veg('CPER', 2021, general = TRUE, species_only = FALSE)
-veg_char_2021 %>% group_by(PC, subplot, covtype, rel_cat) %>% summarise(n = n()) %>%
-  filter(rel_cat != 'neutral') %>%
-  group_by(PC, subplot, rel_cat) %>%
-  summarise(covs = list(unique(covtype))) %>%
-  ungroup() %>%
-  mutate(rel_cat_simplified = ifelse(rel_cat == 'strong negative', 'neg', 'pos'),
-         summary = paste(rel_cat_simplified, covs)) %>%
-  select(PC, subplot, summary)
+veg_char_summary <- function(which_site, which_year, general, species_only) {
+  site_year_char <- characterize_veg(which_site, which_year, general, species_only)
+  
+  site_year_char %>% group_by(PC, subplot, covtype, rel_cat) %>% 
+    summarise(n = n()) %>%
+    filter(rel_cat != 'neutral') %>%
+    group_by(PC, subplot, rel_cat) %>%
+    summarise(covs = list(unique(covtype))) %>%
+    ungroup() %>%
+    mutate(rel_cat_simplified = ifelse(rel_cat == 'strong negative', 'neg', 'pos'),
+           summary = paste(rel_cat_simplified, covs)) %>%
+    select(PC, subplot, summary) %>%
+    mutate(PC_summary = paste0(PC, ': ', summary),
+           plotID = str_sub(subplot, 1, 8),
+           subplotID = str_sub(subplot, 10, 15),
+           year = str_sub(subplot, 17, 20)) %>%
+    select(plotID, subplotID, year, PC, PC_summary) %>%
+    arrange(plotID, subplotID, PC)
+}
 
-#plot: CPER 1
-#3 subplots: 40 1 1, 40 1 3, 41 4 1, -litter, plants, + standing dead; generally the vibe across the plot
+veg_char_2024 <- veg_char_summary('CPER', 2024, general = TRUE, species_only = FALSE)
+veg_char_2021 <- veg_char_summary('CPER', 2021, general = TRUE, species_only = FALSE)
 
-#CPER3, 1 subplot: neg standing dead, positive plants. 
-
-#CPER 5: positive litter, plants, wood
-
-veg_char_2024 <- characterize_veg('CPER', 2024, general = TRUE, species_only = FALSE)
+veg_char_both <- rbind(veg_char_2024, veg_char_2021) %>%
+  group_by(plotID, subplotID, PC) %>%
+  filter(plotID == 'CPER_001') %>%
+  group_by(subplotID, year, PC) %>%
+  arrange(subplotID, PC, year) %>%
+  print(n = 25)
+  pivot_wider(names_from = year, names_prefix = 'Y', values_from = PC_summary, values_fill = 0)
+  
 
 
 #Looking at bouts within a year:
