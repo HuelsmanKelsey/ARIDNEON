@@ -121,7 +121,7 @@ Event <- site_veg %>%
     #adding all smaller scale occurrences to broader ones
     contained_within_100 = case_when(
       sampleSizeValue == 100 ~ paste0(plotID, '_', subplotID, '_', year, '_', boutNumber),
-      sampleSizeValue == 10 ~ paste0(plotID, '_', as.character(strtrim(subplotID, 5)), '0', '_', year, , '_', boutNumber),
+      sampleSizeValue == 10 ~ paste0(plotID, '_', strtrim(subplotID, 5), '0', '_', year, '_', boutNumber),
       sampleSizeValue == 1 ~ paste0(plotID, '_', strtrim(subplotID, 4), '00', '_', year, '_', boutNumber)),
     contained_within_10 = case_when(
       sampleSizeValue == 1 ~ paste0(plotID, '_', str_replace(subplotID, '_1_', '_10_'), '_', year, '_', boutNumber),
