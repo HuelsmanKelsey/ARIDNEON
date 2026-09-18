@@ -270,7 +270,7 @@ avail_file_list <- function(which_site,
 
 #make a wv dataframe if needed:
 get_wvs <- function(which_site, which_year) {
-  path <- avail_site_files[1,]$h5_filepath
+  path <- avail_file_list(which_site, which_year)[1,]$h5_filepath
   md1 <- rhdf5::h5readAttributes(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
   md2 <- rhdf5::h5readAttributes(path, paste0('/', which_site, '/Reflectance'))
   wv <- rhdf5::h5read(path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
@@ -297,6 +297,7 @@ get_wvs <- function(which_site, which_year) {
     select(year, wv, band)
   return(kept_bands)
 }
+
 home <- '/Users/khuelsma/'
 
 #map_site_tiles will return a dataframe that gives you easy to open .tifs of full tiles: 
@@ -494,77 +495,92 @@ get_site_subplots <- function(which_site, which_size) {
   }
 }
 
-em <- get_site_subplots('CPER', 100)
-# extract_subplot_spectra opens files from list and extract necessary info, 
-#inputs are:
-#1) a file list of tiffs: hsi_list or rgb_list or spbands_list
-#which_rast = hsi_list, rgb_list, spbands_list
-#2) A subplot list of particular sizes: get_site_subplots(which_site, which_size)
-#which_size = 1, 10, 100
-hello <- extract_subplot_spectra('hsi', 'CPER', 2021, 1, which_buff = 0)
-hello_buff <- extract_subplot_spectra('hsi', 'CPER', 2021, 1, which_buff = 2)
-
-extract_subplot_spectra <- function(which_rast, which_site, which_year, which_size, which_buff) {
-  input_with_paths <- map_site_tiles(which_site, which_year)
+#function to create a full site raster, which will be used in extract_subplot_spectra and mapping!
+create_site_raster <- function(which_rast, which_site, which_year) {
+  input_dir = '/Users/khuelsma/Desktop/ARIDNEON/'
+  csv_path <- paste0(input_dir, which_site, '_', which_year, '_tiles.csv')
+  if(!file.exists(csv_path)) stop("Tiles CSV not found. Run map_site_tiles first.")
+  input_with_paths <- read.csv(csv_path)
   
-  if (which_rast == 'hsi') {
-    input <- input_with_paths %>%
-      distinct(hsi_saved_path)
-    raster_list <- unique(input$hsi_saved_path)
+  merge_tiles <- function(filepaths) {
+    valid_paths <- na.omit(unique(filepaths))
+    rast_list <- lapply(valid_paths, terra::rast)
+    return(terra::merge(terra::sprc(rast_list)))
   }
+
+  if (which_rast == 'hsi') return(merge_tiles(input_with_paths$hsi_saved_path))
+  if (which_rast == 'rgb') return(merge_tiles(input_with_paths$rgb_filepath))
   
-  if (which_rast == 'rgb') {
-    input <- input_with_paths %>%
-      distinct(rgb_filepath)
-    raster_list <- unique(input$rgb_filepath)
+  if (which_rast == 'vi') {
+    # Merge SpBands first, then calculate VIs globally across the whole site!
+    sp_merged <- merge_tiles(input_with_paths$spbands_saved_path)
+    
+    # Calculate VIs on the merged raster (much faster/cleaner than tile-by-tile)
+    NDVI <- (sp_merged[['NIR']] - sp_merged[['red']]) / (sp_merged[['NIR']] + sp_merged[['red']] + 0.0001)
+    PRI  <- (sp_merged[['NIR']] - sp_merged[['green']]) / (sp_merged[['NIR']] + sp_merged[['green']])
+    NIRv <- sp_merged[['NIR']] * NDVI
+    CCI  <- (sp_merged[['PRI']] - sp_merged[['red']]) / (sp_merged[['PRI']] + sp_merged[['red']])
+    
+    vi_merged <- c(CCI, NIRv, PRI)
+    names(vi_merged) <- c("CCI", "NIRv", "PRI")
+    return(vi_merged)
   }
-  
-  input <- raster_list
-  which_subplots <- get_site_subplots(which_site, which_size)
-
-  #for each tile from input
-  extracted <- foreach(
-    img = 1:length(input),
-    .combine = rbind) %do% {
-      
-      #for rgb: this_tile <- input[[img]]
-      
-      #for hsi:
-      this_tile <- terra::rast(input[[img]])
-      tile_extent <- ext(this_tile)
-      subplots_projected <- terra::project(which_subplots, this_tile) #can also use David's data here
-      subplots_in_tile <- subplots_projected[tile_extent]
-
-      if (nrow(subplots_in_tile) > 0) {
-        extracted_subplots <- foreach( #plots are really subplots
-          subplot = 1:nrow(subplots_in_tile),
-          .combine = rbind) %do% {
-            
-            this_subplot <- subplots_in_tile[subplot,] #for each subplot, numbered 1 to nrow
-            this_subplot_df <- as.data.frame(this_subplot)
-            plotID = this_subplot_df$plotID
-            subplotID = this_subplot_df$subplotID
-            size = this_subplot$subpltSize
-            #square root the size (area), cut in half
-            subplot_size = 0.5*sqrt(size)
-            buff_size = which_buff #set as whatever; can include as an argument
-            buff_width = subplot_size + buff_size
-            buff_extent <- terra::ext(terra::buffer(this_subplot, 
-                                                    width = buff_width))
-            subplot_metrics <- terra::extract(this_tile, 
-                                              buff_extent,
-                                              xy = TRUE,
-                                              cells = TRUE) %>%
-              cross_join(this_subplot_df) %>%
-              
-              #making up bout number for this one
-              mutate(eventID = paste0(plotID, '_', subplotID, '_', which_year, '_', 1))
-            
-            #subplot_metrics #gets rbinded
-          }
-      }
-      #extracted_subplots #gets rbinded
-    }
-  #extracted
 }
 
+CPER_2021_hsi <- create_site_raster('hsi', 'CPER', 2021)
+CPER_2024_hsi <- create_site_raster('hsi', 'CPER', 2024)
+CPER_2021_rgb <- create_site_raster('rgb', 'CPER', 2021)
+CPER_2024_rgb <- create_site_raster('rgb', 'CPER', 2024)
+
+create_square_polygons <- function(input) { #where input is the projected subplots
+  coords <- terra::crds(input)
+  
+  poly_list <- lapply(1:nrow(coords), function(i) {
+    x <- coords[i, "x"]
+    y <- coords[i, "y"]
+    side <- sqrt(input$subpltSize[i])
+    if (is.na(side) || is.null(side)) side <- 20 # Fallback for 400m2
+  # Create extent (xmin, xmax, ymin, ymax) and cast to polygon
+  sq_ext <- terra::ext(x, x + side, y, y + side)
+  sq_poly <- terra::vect(sq_ext)
+  terra::crs(sq_poly) <- terra::crs(input)
+  return(sq_poly)
+  }) 
+  return(do.call(rbind, poly_list))
+}
+
+extract_subplot_spectra <- function(which_rast, which_site, which_year, which_size, which_buff) {
+ # replacing input_with_paths <- map_site_tiles(which_site, which_year) with create_site_raster outputs
+  site_raster <- get(paste0(which_site, '_', which_year, '_', which_rast))
+  # only if file doesn't exist: site_raster <- create_site_raster(which_rast, which_site, which_year)
+
+  #input <- raster_list
+  which_subplots <- get_site_subplots(which_site, which_size)
+  #project to site_raster projection
+  subplots_proj <- terra::project(which_subplots, terra::crs(site_raster))
+  
+  #create polygons using create_square_polygons helper and buffer.
+  subplot_polys <- create_square_polygons(subplots_proj)
+  buffed_subplots <- terra::buffer(subplot_polys, which_buff)
+  
+  extracted_spectra <- data.frame() #replacing c() with data.frame()
+
+  for (subplot in 1:nrow(buffed_subplots)) {
+    this_sub <- buffed_subplots[subplot, ]
+    this_subplot_df <- as.data.frame(this_sub)
+  
+    subplot_metrics <- terra::extract(site_raster, 
+                                        this_sub,
+                                        xy = TRUE,
+                                        cells = TRUE) %>%
+        cbind(this_subplot_df) %>% #changed cross_join to cbind
+      
+        #making up bout number for this one... will need to do something diff for 2020 data though
+      
+        mutate(eventID = paste0(plotID, '_', subplotID, '_', which_year, '_', 1))
+      
+      extracted_subplot_spectra <- rbind(extracted_spectra, subplot_metrics)
+    }
+       
+  return(extracted_subplot_spectra)
+}
