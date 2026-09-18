@@ -470,8 +470,6 @@ input_with_paths <- map_site_tiles('CPER', 2024)
 
 #IF YOU MADE IT THIS FAR, THE TILES ARE DOWNLOADED AND YOU CAN OPEN THEM
 
-
-
 #the function version:
 get_site_subplots <- function(which_site, which_size) {
   
@@ -495,7 +493,8 @@ get_site_subplots <- function(which_site, which_size) {
   }
 }
 
-#function to create a full site raster, which will be used in extract_subplot_spectra and mapping!
+#function to open or to create (and save) a full site raster,
+# which will be used in both extract_subplot_spectra and mapping!
 create_site_raster <- function(which_rast, which_site, which_year) {
   input_dir = '/Users/khuelsma/Desktop/ARIDNEON/'
   csv_path <- paste0(input_dir, which_site, '_', which_year, '_tiles.csv')
@@ -508,29 +507,89 @@ create_site_raster <- function(which_rast, which_site, which_year) {
     return(terra::merge(terra::sprc(rast_list)))
   }
 
-  if (which_rast == 'hsi') return(merge_tiles(input_with_paths$hsi_saved_path))
-  if (which_rast == 'rgb') return(merge_tiles(input_with_paths$rgb_filepath))
+  if (which_rast == 'hsi') {
+    # look for already created files or create them.
+    # Import plots shape files to crop and save
+    plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
+    site_plot_polygons <- subset(plots_shp, 
+                                 stringr::str_detect(plots_shp$plotID, which_site ) & 
+                                   stringr::str_detect(plots_shp$appMods, 'div'))
+    # Project plots to match the raster CRS
+    desired_projection <- terra::crs(terra::rast(na.omit(input_with_paths$hsi_saved_path)[1]))
+    site_plots_projected <- terra::project(site_plot_polygons, desired_projection) #can also use David's data here
+    
+    #look for exported tile directory:
+    hsi_dir <- '/Users/khuelsma/Desktop/ARIDNEON/hsi_plots/'
+    
+    if(!dir.exists(hsi_dir)) dir.create(hsi_dir, recursive = TRUE)
+
+    expected_files <- paste0(hsi_dir, which_site, "_", which_year, "_", site_plots_projected$plotID, "_hsi.tif")
+    # If ANY of the expected plots are missing, we run the extraction
+    if (!all(file.exists(expected_files))) {
+      print('Missing cached HSI plots. Generating them now...')
+      hsi_merged <- merge_tiles(input_with_paths$hsi_saved_path)
+      
+      #open the files:
+      for (ID in 1:nrow(site_plots_projected)) {
+        this_plot <- site_plots_projected[ID, ]
+        plotID <- as.character(this_plot$plotID)
+        plot_ext <- terra::ext(this_plot)
+        
+        #doing tryCatch so if there's an error it's chill; if not null, continues
+        cropped_plot <- tryCatch({
+          terra::crop(hsi_merged, plot_ext)
+        }, error = function(e) NULL)
+        
+        if (!is.null(cropped_plot)) {
+          #so when you need to open: 
+          file_name <- paste0(hsi_dir, which_site, "_", which_year, "_", plotID, "_hsi.tif")
+          terra::writeRaster(cropped_plot, file_name, overwrite = TRUE)
+          }
+      }
+    }
+    valid_files <- expected_files[file.exists(expected_files)]
+    #return a virtual map of the plots
+    return(terra::vrt(valid_files))
+  } #if which_rast == hsi
   
+  if (which_rast == 'rgb') {
+    save_dir <- '/Users/khuelsma/Desktop/ARIDNEON/'
+    file_name <- paste0(save_dir, which_site, "_", which_year, "_rgb.tif")
+    if (file.exists(file_name)) {
+      return(terra::rast(file_name))
+    } else {
+      print('Missing cached RGB')
+      rgb_merged <- merge_tiles(input_with_paths$rgb_filepath)
+      terra::writeRaster(rgb_merged, file_name, overwrite = TRUE)
+      return(rgb_merged)
+    }
+  }
   if (which_rast == 'vi') {
-    # Merge SpBands first, then calculate VIs globally across the whole site!
-    sp_merged <- merge_tiles(input_with_paths$spbands_saved_path)
-    
-    # Calculate VIs on the merged raster (much faster/cleaner than tile-by-tile)
-    NDVI <- (sp_merged[['NIR']] - sp_merged[['red']]) / (sp_merged[['NIR']] + sp_merged[['red']] + 0.0001)
-    PRI  <- (sp_merged[['NIR']] - sp_merged[['green']]) / (sp_merged[['NIR']] + sp_merged[['green']])
-    NIRv <- sp_merged[['NIR']] * NDVI
-    CCI  <- (sp_merged[['PRI']] - sp_merged[['red']]) / (sp_merged[['PRI']] + sp_merged[['red']])
-    
-    vi_merged <- c(CCI, NIRv, PRI)
-    names(vi_merged) <- c("CCI", "NIRv", "PRI")
-    return(vi_merged)
+    save_dir <- '/Users/khuelsma/Desktop/ARIDNEON/'
+    file_name <- paste0(save_dir, which_site, "_", which_year, "_vi.tif")
+    if (file.exists(file_name)) {
+      return(terra::rast(file_name))
+    } else {
+      print('Missing cached vi map')
+      # Merge SpBands first, then calculate VIs globally across the whole site!
+      sp_merged <- merge_tiles(input_with_paths$spbands_saved_path)
+      
+      # Calculate VIs on the merged raster (much faster/cleaner than tile-by-tile)
+      NDVI <- (sp_merged[['NIR']] - sp_merged[['red']]) / (sp_merged[['NIR']] + sp_merged[['red']] + 0.0001)
+      PRI  <- (sp_merged[['NIR']] - sp_merged[['green']]) / (sp_merged[['NIR']] + sp_merged[['green']])
+      NIRv <- sp_merged[['NIR']] * NDVI
+      CCI  <- (sp_merged[['PRI']] - sp_merged[['red']]) / (sp_merged[['PRI']] + sp_merged[['red']])
+      
+      vi_merged <- c(CCI, NIRv, PRI)
+      names(vi_merged) <- c("CCI", "NIRv", "PRI")
+      terra::writeRaster(vi_merged, file_name, overwrite = TRUE)
+      return(vi_merged)
+    }
   }
 }
 
-CPER_2021_hsi <- create_site_raster('hsi', 'CPER', 2021)
-CPER_2024_hsi <- create_site_raster('hsi', 'CPER', 2024)
-CPER_2021_rgb <- create_site_raster('rgb', 'CPER', 2021)
-CPER_2024_rgb <- create_site_raster('rgb', 'CPER', 2024)
+CPER_hsi_2021 <- create_site_raster('hsi', 'CPER', 2021)
+CPER_hsi_2024 <- create_site_raster('hsi', 'CPER', 2024)
 
 create_square_polygons <- function(input) { #where input is the projected subplots
   coords <- terra::crds(input)
@@ -549,11 +608,97 @@ create_square_polygons <- function(input) { #where input is the projected subplo
   return(do.call(rbind, poly_list))
 }
 
+#using the tile list, we can make a full site map or extract plots and subplots.
+#so if I say make_maps, I want to load every tile, but extract the plot [[plot_ID]] and then subplots [[subplot_ID]]
+#for make_maps, save a list of them. For extract_subplot_spectra, 
+make_maps <- function(which_rast, 
+                      which_site, 
+                      which_year, 
+                      full_site = FALSE,
+                      which_buff) {
+  
+  site_raster <- create_site_raster(which_rast, 
+                                    which_site, 
+                                    which_year)
+  if(is.null(site_raster)) stop("site_raster not found. Run create_site_raster(which_rast, which_site, which_year) first.")
+  
+  # Import plots shape files
+  plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
+  site_plot_polygons <- subset(plots_shp, 
+                               stringr::str_detect(plots_shp$plotID, which_site ) & 
+                                 stringr::str_detect(plots_shp$appMods, 'div'))
+  # Project plots to match the raster CRS
+  site_plots_projected <- terra::project(site_plot_polygons, terra::crs(site_raster)) #can also use David's data here
+  
+  if (full_site == TRUE) {
+    terra::plotRGB(site_raster, r = 1, g = 2, b = 3, stretch = 'lin')
+    terra::plot(site_plots_projected, add = TRUE, border = "yellow", lwd = 4)
+    terra::text(site_plots_projected, site_plots_projected$plotID, col = "black", halo = TRUE, hc = "white", cex = 1.2, font = 2, pos = 3)
+    
+    return(site_raster)
+  }
+  
+  #moved get subplots
+  site_subplots <- get_site_subplots(which_site, 1)
+  subplots_projected <- terra::project(site_subplots, site_raster)
+  
+  site_output_list <- list() # Initialize the primary named list
+  
+  # Loop over every PLOT in the site
+  for (ID in 1:nrow(site_plots_projected)) {
+    this_plot <- site_plots_projected[ID, ]
+    plotID <- as.character(this_plot$plotID)
+    plot_ext <- terra::ext(this_plot)
+    
+    #doing tryCatch so if there's an error it's chill; if not null, continues
+    cropped_plot <- tryCatch({
+      terra::crop(site_raster, plot_ext)
+    }, error = function(e) NULL)
+    
+    if (!is.null(cropped_plot)) {
+      save_dir <- '/Users/khuelsma/Desktop/ARIDNEON/hsi_plots/'
+      if(!dir.exists(save_dir)) dir.create(save_dir, recursive = TRUE)
+      
+      file_name <- paste0(save_dir, which_site, "_", which_year, "_", plotID, "_", which_rast, ".tif")
+      
+      if(!file.exists(file_name)) { #only if the file doesn't already exist, make a raster of it
+        terra::writeRaster(cropped_plot, file_name, overwrite = TRUE)
+      }
+      
+      # Initialize a nested list for THIS specific plot
+      plot_list <- list()
+      plot_list[['plot_full']] <- cropped_plot
+      
+      # Find all subplots that belong to this plot
+      subplots_in_plot <- subset(subplots_projected, subplots_projected$plotID == plotID)
+      
+      # If subplots exist, extract them
+      if (nrow(subplots_in_plot) > 0) {
+        
+        #create square geometries for subplots:
+        sub_polys <- create_square_polygons(subplots_in_plot)
+        #for each one,
+        for (sub in 1:nrow(sub_polys)) {
+          this_sub <- subplots_in_plot[sub, ]
+          subplotID <- as.character(this_sub$subplotID)
+          
+          # Buffer and crop from the already-cropped plot raster for speed
+          buff_ext <- terra::ext(terra::buffer(sub_polys[sub, ], which_buff))
+          cropped_subplot <- tryCatch({ terra::crop(cropped_plot, buff_ext) }, error = function(e) NULL)
+          
+          if (!is.null(cropped_subplot)) plot_list[[subplotID]] <- cropped_subplot
+        }
+      }
+      site_output_list[[plotID]] <- plot_list
+    }
+  }
+  return(site_output_list)
+}
+
+
 extract_subplot_spectra <- function(which_rast, which_site, which_year, which_size, which_buff) {
  # replacing input_with_paths <- map_site_tiles(which_site, which_year) with create_site_raster outputs
-  site_raster <- get(paste0(which_site, '_', which_year, '_', which_rast))
-  # only if file doesn't exist: site_raster <- create_site_raster(which_rast, which_site, which_year)
-
+  site_raster <- create_site_raster(which_rast, which_site, which_year)
   #input <- raster_list
   which_subplots <- get_site_subplots(which_site, which_size)
   #project to site_raster projection
@@ -579,8 +724,18 @@ extract_subplot_spectra <- function(which_rast, which_site, which_year, which_si
       
         mutate(eventID = paste0(plotID, '_', subplotID, '_', which_year, '_', 1))
       
-      extracted_subplot_spectra <- rbind(extracted_spectra, subplot_metrics)
+    extracted_spectra <- rbind(extracted_spectra, subplot_metrics)
     }
        
-  return(extracted_subplot_spectra)
+  return(extracted_spectra)
 }
+
+
+CPER_2021_hsi <- create_site_raster('hsi', 'CPER', 2021)
+CPER_2024_hsi <- create_site_raster('hsi', 'CPER', 2024)
+CPER_2021_rgb <- create_site_raster('rgb', 'CPER', 2021)
+CPER_2024_rgb <- create_site_raster('rgb', 'CPER', 2024)
+CPER_2021_vi <- create_site_raster('vi', 'CPER', 2021)
+CPER_2024_vi <- create_site_raster('vi', 'CPER', 2024)
+
+extract_subplot_spectra('hsi', 'CPER', 2024, 1, 0)
