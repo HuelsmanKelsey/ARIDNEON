@@ -6,7 +6,14 @@
 #     Ends w check files exist and outputs a list of files
 # open files from list and extract necessary info, interpret the data
 #     Save summaries and map
-
+home <- '/Users/khuelsma/'
+setwd(home)
+neon_token <- if (file.exists('NEON_token.txt')) {
+  neon_token <- readLines('neon_token.txt')
+} else {
+  neon_token <- rstudioapi::askForPassword(prompt = 'enter NEON token')
+}
+options(timeout = 3600) #increase timeout to 1 hour
 
 # Load packages -----------------------------------------------------------
 
@@ -94,11 +101,15 @@ both_avail <- function(which_site) { #default is BRDF = FALSE
 # function to get all easting and northing values for all tiles at *a site*
 #req's locations of NEON plots from their website:
 #can use all_NEON_plots w LL / EN centroids or shapefiles, both are from NEON's site
+
 all_NEON_plots <- read.csv(file = 'All_NEON_TOS_Plot_Centroids_V11.csv')
+LL_input <- "/Users/khuelsma/ARIDNEON_Working/Augustine_VegPoint_2026.shp/VegPOINT_2026.shp"
+
 get_site_EN <- function(which_site, 
+                        other_locations = FALSE, #default
                         tiles_only = FALSE) {   #this is for file checking
   
-  #filter NEON's plot centroids from the repo to site, get unique values
+  #filter NEON's plot centroids from the repo to site, get crs for the cases when we have LL inputs
   plot_polygons <- all_NEON_plots %>% #created above
     filter(grepl('div', appMods)) %>% #filter to just diversity plots for now
     filter(siteID == which_site) %>% #filter to the site
@@ -112,44 +123,42 @@ get_site_EN <- function(which_site,
     ) %>%
     select(-utmZone)
   
-  if (which_site == 'LL') {
-    #LL should be loaded above; need to troubleshoot this.
-    
-    plot_polygons <- plots_shp
-  }
+  target_crs <- unique(plot_polygons$crs)
+  domainID <- unique(plot_polygons$domainID)
+  
+  if (other_locations == TRUE) { #not default
+    #turn shapefile into sf object, then a terra-friendly vector, then project to same projection as NEON uses.
+    input_geom <- sf::st_zm(sf::st_read(LL_input)) #input_shp: "/Users/khuelsma/ARIDNEON_Working/Augustine_VegPoint_2026.shp/VegPOINT_2026.shp" and #"/Users/khuelsma/ARIDNEON_Working/Augustine_VegPolygon_2026/VegPolygon2026.shp"
+    geom_vect <- terra::vect(input_geom)
+    geom_proj <- terra::project(geom_vect, paste0("EPSG:", target_crs))
+
+    plot_polygons <- geom(geom_proj) %>% #created above
+      as.data.frame() %>%
+      mutate(
+        #fixes Blandy's 17/18 N border (I think)
+        E_tile = 1000*floor(x/1000),
+        N_tile = 1000*floor(y/1000),
+        domainID = domainID,
+        crs = target_crs
+      ) %>%
+      print()
+    }
   #if tiles only (for file checking and opening)
   if (tiles_only == TRUE) {
-    plot_polygons <- plot_polygons %>%
+    tiles_needed <- plot_polygons %>%
       distinct(E_tile, N_tile, domainID, crs)
-    return(plot_polygons)
+    return(tiles_needed)
   }
   
   return(plot_polygons)
 }
 
-#just for fun
-check_dims <- function(which_site) {
-  obs <- get_site_EN(which_site) # will give you ALL THE DETAILS of obs plots but also the tiles
-  tiles_fr_obs <- obs %>%
-    distinct(E_tile, N_tile)
-  n_tiles_fr_obs <- dim(tiles_fr_obs)[1]
-  
-  tiles <- get_site_EN(which_site, tiles_only = TRUE) #this will not give you all the details; just tiles
-  n_tiles <- dim(tiles)[1]
-  if (n_tiles_fr_obs != n_tiles) {
-    print('check unique tiles from plots; check n tiles available to download')
-  }
-  if (n_tiles_fr_obs == n_tiles) {
-    print(paste('all', n_tiles_fr_obs, 'tiles have TOS plots :)'))
-  }
-}
-home <- '/Users/khuelsma/'
 avail_file_list <- function(which_site, 
                            which_year = NULL,
-                           download = FALSE) {
+                           other_locations = FALSE, #default
+                           download = FALSE) { #default
   #tiles at the site
-  site_tiles <- get_site_EN(which_site, tiles_only = TRUE)
-  
+  site_tiles <- get_site_EN(which_site, other_locations, tiles_only = TRUE)
   if(nrow(site_tiles) == 0) {
     warning("No plots found for site: ", which_site)
     #return(data.frame(site = character(), year = numeric(), path = character()))
@@ -246,10 +255,19 @@ avail_file_list <- function(which_site,
             
             # 3. Check RGB file
             if (file.exists(rgb_filepath_full)) {
+              #if rgb path exists, add it to the list
               current_tile$rgb_filepath <- rgb_filepath_full
-            } else { 
+            } else { #otherwise, download needed, and if download == TRUE,
               current_tile$rgb_filepath <- NA
               print('download needed')
+              
+              if (download == TRUE) {
+              tryCatch({
+                neonUtilities::byTileAOP(dpID = 'DP3.30010.001', site = which_site, easting = easting, northing = northing, buffer = 0, check.size = FALSE, include.provisional = TRUE, year = which_year, token = neon_token, progress = TRUE)
+              }, error = function(e) warning("RGB Download failed"))
+            }
+            
+              
             }
             
             return(current_tile) # Return this valid row to rbind
@@ -258,7 +276,18 @@ avail_file_list <- function(which_site,
             return(NULL) # Unreadable, skip appending
           }
         } else {
-          return(NULL) # Doesn't exist, skip appending
+          
+          if(download == TRUE) {
+            cat(sprintf("  File not found. Downloading tile: E=%d, N=%d, Year=%s\n", easting, northing, which_year))
+            tryCatch({
+              neonUtilities::byTileAOP(dpID = DP, site = which_site, easting = easting, northing = northing, buffer = 0, check.size = FALSE, include.provisional = TRUE, year = which_year, token = neon_token, progress = TRUE)
+            }, error = function(e) warning("HDF5 Download failed"))
+            #download
+          } else {
+            return(NULL) # Doesn't exist, skip appending
+            
+          }
+          
         }
       } # end inner foreach from folders
     
@@ -266,6 +295,8 @@ avail_file_list <- function(which_site,
     found_tiles 
   } #each tile year
 }
+
+CPER_other <- avail_file_list('CPER', which_year = 2024, other_locations = TRUE, download = TRUE)
 
 
 #make a wv dataframe if needed:
@@ -305,21 +336,27 @@ home <- '/Users/khuelsma/'
 # hsi, special bands, and rgb
 map_site_tiles <- function(which_site, 
                            which_year = NULL, 
+                           other_locations = FALSE, #default
                            download = FALSE, 
                            output_dir = home) {
   
-  filepath <- paste0(
-    '/Users/khuelsma/Desktop/ARIDNEON/',
-    which_site, '_', which_year, '_', 'tiles.csv')
-  
-  if (file.exists(filepath)) {
-    
-    input_with_paths <- read.csv(filepath)
-    return(input_with_paths)
-  }
-  
-  if (!file.exists(filepath)) {
-    print('file does not exist')
+  # if(other_locations == TRUE) {
+  #   filepath <- paste0(
+  #     '/Users/khuelsma/Desktop/ARIDNEON/',
+  #     which_site, '_', which_year, '_other_', 'tiles.csv')
+  # } else {
+  #   filepath <- paste0(
+  #     '/Users/khuelsma/Desktop/ARIDNEON/',
+  #     which_site, '_', which_year, '_NEON_', 'tiles.csv')
+  # }
+  # 
+  # if (file.exists(filepath)) {
+  #   input_with_paths <- read.csv(filepath)
+  #   return(input_with_paths)
+  # }
+  # 
+  # if (!file.exists(filepath)) {
+  #   print('saved file list does not exist')
   
   # 0. Create output directory if it doesn't exist
   if (!dir.exists(output_dir)) {
@@ -327,7 +364,7 @@ map_site_tiles <- function(which_site,
   }
   
   # 1. Get the dataframe of available files
-  input <- avail_file_list(which_site, which_year, download)
+  input <- avail_file_list(which_site, which_year, other_locations, download)
   
   if(nrow(input) == 0) {
     warning("No valid files found in avail_file_list.")
@@ -461,13 +498,19 @@ map_site_tiles <- function(which_site,
   
   #export this dataframe:
   setwd('/Users/khuelsma/Desktop/ARIDNEON/')
-  write.csv(input_with_paths, file = paste0(which_site, '_', which_year, '_', 'tiles.csv'))
+  if(other_locations == TRUE) {
+    write.csv(input_with_paths, file = paste0(which_site, '_', which_year, '_other_', 'tiles.csv'))
+    
+  } else {
+    write.csv(input_with_paths, file = paste0(which_site, '_', which_year, '_NEON_', 'tiles.csv'))
+  }
   
   return(input_with_paths)
   } #this creates the file
 }
-input_with_paths <- map_site_tiles('CPER', 2024)
 
+input_with_paths <- map_site_tiles('CPER', 2024, other_locations = TRUE, download = TRUE)
+input_with_paths
 #IF YOU MADE IT THIS FAR, THE TILES ARE DOWNLOADED AND YOU CAN OPEN THEM
 
 #the function version:
@@ -508,19 +551,19 @@ create_site_raster <- function(which_rast, which_site, which_year) {
   }
 
   if (which_rast == 'hsi') {
+
     # look for already created files or create them.
     # Import plots shape files to crop and save
-    plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
-    site_plot_polygons <- subset(plots_shp, 
-                                 stringr::str_detect(plots_shp$plotID, which_site ) & 
-                                   stringr::str_detect(plots_shp$appMods, 'div'))
+    NEON_plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
+    site_plot_polygons <- subset(NEON_plots_shp, 
+                                 stringr::str_detect(NEON_plots_shp$plotID, which_site ) & 
+                                   stringr::str_detect(NEON_plots_shp$appMods, 'div'))
     # Project plots to match the raster CRS
     desired_projection <- terra::crs(terra::rast(na.omit(input_with_paths$hsi_saved_path)[1]))
     site_plots_projected <- terra::project(site_plot_polygons, desired_projection) #can also use David's data here
     
-    #look for exported tile directory:
+    #look for exported tile directory; if it doesn't exist, create it
     hsi_dir <- '/Users/khuelsma/Desktop/ARIDNEON/hsi_plots/'
-    
     if(!dir.exists(hsi_dir)) dir.create(hsi_dir, recursive = TRUE)
 
     expected_files <- paste0(hsi_dir, which_site, "_", which_year, "_", site_plots_projected$plotID, "_hsi.tif")
@@ -588,9 +631,6 @@ create_site_raster <- function(which_rast, which_site, which_year) {
   }
 }
 
-CPER_hsi_2021 <- create_site_raster('hsi', 'CPER', 2021)
-CPER_hsi_2024 <- create_site_raster('hsi', 'CPER', 2024)
-
 create_square_polygons <- function(input) { #where input is the projected subplots
   coords <- terra::crds(input)
   
@@ -623,8 +663,8 @@ make_maps <- function(which_rast,
   if(is.null(site_raster)) stop("site_raster not found. Run create_site_raster(which_rast, which_site, which_year) first.")
   
   # Import plots shape files
-  plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
-  site_plot_polygons <- subset(plots_shp, 
+  NEON_plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
+  NEON_site_plot_polygons <- subset(NEON_plots_shp, 
                                stringr::str_detect(plots_shp$plotID, which_site ) & 
                                  stringr::str_detect(plots_shp$appMods, 'div'))
   # Project plots to match the raster CRS
@@ -695,11 +735,22 @@ make_maps <- function(which_rast,
   return(site_output_list)
 }
 
-
 extract_subplot_spectra <- function(which_rast, which_site, which_year, which_size, which_buff) {
  # replacing input_with_paths <- map_site_tiles(which_site, which_year) with create_site_raster outputs
   site_raster <- create_site_raster(which_rast, which_site, which_year)
-  #input <- raster_list
+
+  #clean up before extracting:
+  if (which_rast == 'hsi') {
+    bands <- get_wvs(which_site, which_year)
+    names(site_raster) <- bands$band 
+    
+  } else if (which_rast == 'rgb') {
+    names(site_raster) <- c("red", "green", "blue")
+    
+  } else if (which_rast == 'vi') {
+    names(site_raster) <- c("CCI", "NIRv", "PRI")
+  }
+  
   which_subplots <- get_site_subplots(which_site, which_size)
   #project to site_raster projection
   subplots_proj <- terra::project(which_subplots, terra::crs(site_raster))
@@ -707,35 +758,20 @@ extract_subplot_spectra <- function(which_rast, which_site, which_year, which_si
   #create polygons using create_square_polygons helper and buffer.
   subplot_polys <- create_square_polygons(subplots_proj)
   buffed_subplots <- terra::buffer(subplot_polys, which_buff)
-  
-  extracted_spectra <- data.frame() #replacing c() with data.frame()
+  #essentially creating a lookup table for extracted info
+  subplot_info <- as.data.frame(which_subplots)
+  subplot_info$ID <- 1:nrow(which_subplots)
 
-  for (subplot in 1:nrow(buffed_subplots)) {
-    this_sub <- buffed_subplots[subplot, ]
-    this_subplot_df <- as.data.frame(this_sub)
-  
-    subplot_metrics <- terra::extract(site_raster, 
-                                        this_sub,
-                                        xy = TRUE,
-                                        cells = TRUE) %>%
-        cbind(this_subplot_df) %>% #changed cross_join to cbind
-      
+    subplots <- terra::extract(site_raster, buffed_subplots,
+                               xy = TRUE,
+                               cells = TRUE) %>%
+
         #making up bout number for this one... will need to do something diff for 2020 data though
-      
         mutate(eventID = paste0(plotID, '_', subplotID, '_', which_year, '_', 1))
       
-    extracted_spectra <- rbind(extracted_spectra, subplot_metrics)
-    }
-       
-  return(extracted_spectra)
+    extracted_spectra <- merge(subplots, subplot_info, by = 'ID') %>%
+      mutate(eventID = paste0(plotID, '_', subplotID, '_', which_year, '_', 1))
+    extracted_spectra$ID <- NULL     # Clean up the ID column since we don't need it anymore
+
+    return(extracted_spectra)
 }
-
-
-CPER_2021_hsi <- create_site_raster('hsi', 'CPER', 2021)
-CPER_2024_hsi <- create_site_raster('hsi', 'CPER', 2024)
-CPER_2021_rgb <- create_site_raster('rgb', 'CPER', 2021)
-CPER_2024_rgb <- create_site_raster('rgb', 'CPER', 2024)
-CPER_2021_vi <- create_site_raster('vi', 'CPER', 2021)
-CPER_2024_vi <- create_site_raster('vi', 'CPER', 2024)
-
-extract_subplot_spectra('hsi', 'CPER', 2024, 1, 0)
