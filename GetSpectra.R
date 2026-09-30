@@ -103,9 +103,8 @@ repo_dir <- '/Users/khuelsma/Desktop/ARIDNEON/'
 #need to add these shapefiles to repo
 DA_vegpt <-  "/Users/khuelsma/ARIDNEON_Working/Augustine_VegPoint_2026.shp/VegPOINT_2026.shp"
 DA_vegpoly <- "/Users/khuelsma/ARIDNEON_Working/Augustine_VegPolygon_2026/VegPolygon2026.shp"
-#just a list of shape files atm:
-
 other_locations <- list(DA_vegpt, DA_vegpoly)
+
 
 #get site EN gets NEON's veg plot locations for a given site;
 # default for other locations = NULL, but you can add them by setting above.
@@ -125,32 +124,35 @@ get_site_EN <- function(which_site,
       N_tile = 1000*floor(northing/1000),
       crs = unique(epsg_target)
     ) %>%
-    select(-utmZone)
+    select(plotID, easting, northing, E_tile, N_tile, domainID, crs)
   
   target_crs <- unique(neon_plot_polygons$crs)
   domainID <- unique(neon_plot_polygons$domainID)
   
   plot_polygons <- neon_plot_polygons %>% 
-    ungroup() %>%
-    distinct(E_tile, N_tile, domainID, crs) 
+    ungroup()
 
   #other_locations is set to NULL by default, but you can add other_locations = whatever list
   
   if (!is.null(other_locations)) { #not default
     for (this_geom in other_locations) {  #go through each set of location files
-      input_geom <- sf::st_zm(sf::st_read(this_geom))
+      input_geom <- sf::st_zm(sf::st_read(this_geom, quiet = TRUE))
+      geom_type <- as.character(sf::st_geometry_type(input_geom, by_geometry = FALSE))
       geom_proj <- terra::project(terra::vect(input_geom), paste0("EPSG:", target_crs))
 
       other_tiles <- terra::geom(geom_proj) %>%
         as.data.frame() %>%
         mutate(
+          this_row = row_number(),
+          plotID = paste0('other_DA_', 
+                          geom_type, '_',
+                          this_row),
+          easting = x, northing = y, 
           E_tile = 1000*floor(x/1000),
           N_tile = 1000*floor(y/1000),
           domainID = domainID,
-          crs = target_crs
-        ) %>%
-        distinct(E_tile, N_tile, domainID, crs)
-      
+          crs = target_crs) %>%
+        select(plotID, easting, northing, E_tile, N_tile, domainID, crs)
       plot_polygons <- rbind(plot_polygons, other_tiles) %>% distinct()
     }
   } #other locations == TRUE
@@ -162,6 +164,8 @@ get_site_EN <- function(which_site,
   # if want details about each plot, tiles_only == FALSE, which is default
   return(plot_polygons)
 }
+all_plots <- get_site_EN('CPER', other_locations = other_locations)
+
 
 avail_file_list <- function(which_site, 
                            which_year = NULL,
@@ -312,16 +316,14 @@ avail_file_list <- function(which_site,
       current_tile
     } #for each tile / year combo row
   
-  print(final_list)
-  
   final_list <- final_list %>% 
     mutate(boutNumber = match(folderNumber, unique(final_list$folderNumber)))
-  print(final_list)
   return(final_list)
-  
 }
 
-#make a wv dataframe if needed:
+file_list <- avail_file_list('CPER', 2020, other_locations = other_locations, download = TRUE)
+
+#make a wv dataframe if needed:#make a wv dataframe if neededother_locations = :
 get_wvs <- function(which_site, which_year) { #which_site is included, because it will look for a filepath for reference
   path <- avail_file_list(which_site, which_year)[1,]$h5_filepath
   md1 <- rhdf5::h5readAttributes(path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
@@ -351,16 +353,11 @@ get_wvs <- function(which_site, which_year) { #which_site is included, because i
   return(kept_bands)
 }
 
-#available file list will give us the bouts:
-
-get_site_raster('rgb', 'CPER', 2024, other_locations = other_locations)
-#get site raster will make a vi or rgb raster (not hsi)
-# input = vi or rgb
+# input = rgb
 # which_year requires an input
 # other locations defaults to NULL, meaning only NEON plots are used
 # download = FALSE is default
-get_site_raster <- function(which_rast, 
-                           which_site, 
+get_site_raster <- function(which_site, 
                            which_year, #no more NULL default 
                            which_bout = 1, #default
                            other_locations = NULL,
@@ -369,9 +366,7 @@ get_site_raster <- function(which_rast,
                            repo_dir = "/Users/khuelsma/Desktop/ARIDNEON/") { #default
   
   if (is.null(which_year)) stop('specify a year')
-  if (which_rast == 'hsi') stop('cache_hsi_plots for HSI data extraction rather than get_site_raster!')
-  
-  print(paste("Building Virtual Site Map for", which_rast, which_year, "..."))
+  print(paste("Building Virtual RGB Site Map for", which_year, "..."))
   input <- avail_file_list(which_site,
                            which_year, 
                            other_locations,
@@ -384,116 +379,17 @@ get_site_raster <- function(which_rast,
     return(NULL)
   }
   
-  #establish boutNumber based on folderNumber
-  file_list <- input %>%
-    mutate(boutNumber = match(folderNumber, unique(input$folderNumber)))
-  bouts <- unique(input$boutNumber)
-  selected_bout <- bouts[which(bouts == which_bout)]
-  file_input <- file_list %>%
-    filter(boutNumber == selected_bout)
-  
-  if (which_rast == 'rgb') {
-    paths <- na.omit(unique(file_input$rgb_filepath))
-    paths <- paths[file.exists(paths)] #make sure the files exist
+  file_input <- input %>%
+    filter(boutNumber == which_bout)
     
+  paths <- unique(file_input$rgb_filepath) #may need to make sure the files exist
     if (length(paths) == 0) return(NULL)
     site_raster <- terra::vrt(paths) #rgb is already tiffs
     names(site_raster) <- c('red', 'green', 'blue')
-    site_raster
-    } 
-  
-  if (which_rast == 'vi') {
-    
-    temp_paths <- c() # Hold temporary VI tile paths
-    
-    for (img in 1:nrow(input)) {
-      
-      h5_path <- input$h5_filepath[img]
-      if (is.na(h5_path) || !file.exists(h5_path)) next
-      
-      file_is_readable <- tryCatch({
-          rhdf5::h5readAttributes(h5_path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-          TRUE
-        }, error = function(e) {
-          rhdf5::h5closeAll()
-          FALSE
-        })
-        
-        if (file_is_readable) {
-          md1 <- rhdf5::h5readAttributes(h5_path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-          md2 <- rhdf5::h5readAttributes(h5_path, paste0('/', which_site, '/Reflectance'))
-          wv <- rhdf5::h5read(h5_path, paste0('/', which_site, '/Reflectance/Metadata/Spectral_Data'))
-          omit_windows <- data.frame(
-            omit_1_0 = md2$Band_Window_1_Nanometers[1], omit_1_f = md2$Band_Window_1_Nanometers[2],
-            omit_2_0 = md2$Band_Window_2_Nanometers[1], omit_2_f = md2$Band_Window_2_Nanometers[2]
-          ) 
-          # put metadata into wv df
-          file_wv_df <- data.frame(year = as.numeric(which_year), wv = round(wv$Wavelength), band = paste0('B', sprintf("%03d", 1:426))) %>%
-            mutate(
-              omit_band = (wv >= omit_windows$omit_1_0 & wv <= omit_windows$omit_1_f) | (wv >= omit_windows$omit_2_0 & wv <= omit_windows$omit_2_f),
-              keep_band = (wv > 450) & (wv < 2150),
-              data_ignore = md1$Data_Ignore_Value, 
-              SF = md1$Scale_Factor,
-              special_band = case_when(
-                wv == wv[which.min(abs(wv - 630))] ~ 'red', 
-                wv == wv[which.min(abs(wv - 800))] ~ 'NIR',
-                wv == wv[which.min(abs(wv - 570))] ~ 'green', 
-                wv == wv[which.min(abs(wv - 480))] ~ 'blue',
-                wv == wv[which.min(abs(wv - 531))] ~ 'PRI'
-              ))
-          
-          kept_bands <- file_wv_df %>% filter(keep_band == TRUE & omit_band == FALSE)
-          
-          raw_data <- rhdf5::h5read(h5_path, paste0("/", which_site, "/Reflectance/Reflectance_Data"))
-          reordered_data <- aperm(raw_data, c(3, 2, 1))
-          epsg_code <- rhdf5::h5read(h5_path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/EPSG Code"))
-          map_info <- rhdf5::h5read(h5_path, paste0("/", which_site, "/Reflectance/Metadata/Coordinate_System/Map_Info"))
-          
-          map_easting <- as.numeric(strsplit(map_info, ',')[[1]][4])
-          map_northing <- as.numeric(strsplit(map_info, ',')[[1]][5])
-          
-          hsi_rast_raw <- terra::rast(reordered_data, crs = paste0('EPSG:', epsg_code))
-          
-          # Clean up big raw array immediately
-          rm(raw_data, reordered_data); gc() 
-          
-          # set extent and names of raster
-          terra::ext(hsi_rast_raw) <- c(map_easting, map_easting + 1000, map_northing - 1000, map_northing)
-          names(hsi_rast_raw) <- unique(file_wv_df$band)
-          
-          # clean raster: remove atmospheric absorption windows; ignore values; divide by SF
-          hsi_rast_keep <- hsi_rast_raw[[unique(kept_bands$band)]] 
-          hsi_rast_ignore <- terra::subst(hsi_rast_keep, unique(kept_bands$data_ignore), NA) 
-          hsi_rast <- hsi_rast_ignore / unique(kept_bands$SF)
-          
-          rhdf5::h5closeAll()
-          
-          sp_bands_rast <- hsi_rast[[!is.na(kept_bands$special_band)]]
-          names(sp_bands_rast) <- unique(kept_bands$special_band[!is.na(kept_bands$special_band)])
-          
-          NDVI <- (sp_bands_rast[['NIR']] - sp_bands_rast[['red']]) / (sp_bands_rast[['NIR']] + sp_bands_rast[['red']] + 0.0001)
-          PRI  <- (sp_bands_rast[['NIR']] - sp_bands_rast[['green']]) / (sp_bands_rast[['NIR']] + sp_bands_rast[['green']])
-          NIRv <- sp_bands_rast[['NIR']] * NDVI
-          CCI  <- (sp_bands_rast[['PRI']] - sp_bands_rast[['red']]) / (sp_bands_rast[['PRI']] + sp_bands_rast[['red']])
-          vi_rast <- c(CCI, NIRv, PRI)
-          names(vi_rast) <- c("CCI", "NIRv", "PRI")
-          
-          # Save to auto-deleting TEMP file!
-          t_file <- tempfile(pattern = paste0("vi_", map_easting, "_", map_northing), fileext = ".tif")
-          terra::writeRaster(vi_rast, t_file, overwrite = TRUE)
-          temp_paths <- c(temp_paths, t_file)
-          
-          rm(hsi_rast, sp_bands_rast); gc()
-          
-          # Return Virtual Raster
-          site_raster <- terra::vrt(temp_paths)
-          names(site_raster) <- c("CCI", "NIRv", "PRI")
-          
-        } #if file is readable 
-      } 
-    } #which rast == vi
-  return(site_raster)
+    return(site_raster)
 }
+
+rgb_rast <- get_site_raster('CPER', 2021, other_locations = other_locations)
 
 cache_hsi_plots <- function(which_site, 
                             which_year, 
@@ -538,31 +434,19 @@ cache_hsi_plots <- function(which_site,
     return(NULL)
   }
   
-  #establish boutNumber based on folderNumber
-  file_list <- file_list %>%
-    mutate(boutNumber = match(folderNumber, unique(file_list$folderNumber))) %>%
-    print()
-  bouts <- unique(file_list$boutNumber)
-  print(bouts)
-  selected_bout <- bouts[which(bouts == which_bout)]
-  print(selected_bout)
-  
-  if (selected_bout == 0) stop('not a valid bout')
-  
   file_input <- file_list %>%
-    filter(boutNumber == selected_bout) %>%
+    filter(boutNumber == which_bout) %>%
     print()
   
   #by default, it won't say a bout number; if there are multiple boutnumbers, it will include before _hsi.tif
   expected_files <- ifelse(which_bout == 1, 
                            paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_hsi.tif"),
-                           paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_", boutNumber, "_hsi.tif"))
+                           paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_", which_bout, "_hsi.tif"))
   #was expected_files <- paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_hsi.tif")
   if (all(file.exists(expected_files))) {
     print("All HSI plots already cached! Skipping H5 processing.")
     return(TRUE)
   }
-  
   # 3. If missing plots, use the available files list
   if (nrow(file_input) == 0) stop("No files available to process.")
   
@@ -636,7 +520,6 @@ cache_hsi_plots <- function(which_site,
       gc()
       # Loop through the successful intersecting plots and crop them!
       for (i in 1:length(plots_to_crop)) {
-        print(plots_to_crop[[i]])
         this_group <- plots_to_crop[[i]]
         
         for (p in 1:nrow(this_group)) {
@@ -660,18 +543,17 @@ cache_hsi_plots <- function(which_site,
             }
           }
         }
-      }
+      } #plots to crop
       
       rm(hsi_rast_raw)
       gc()
       rhdf5::h5closeAll()
-    }
-  }
+    } #file readable
+  } #each tile
   return(TRUE) # This just tells extract_from_maplist() that the caching succeeded!
 }
 
 get_site_subplots <- function(which_site, which_size) {
-  
   #all subplots (points)
   subplots_shp <- terra::vect(
     '/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Subplots_V11.shp')
@@ -709,22 +591,25 @@ create_square_polygons <- function(input) { #where input is the projected subplo
   return(do.call(rbind, poly_list))
 }
 
-#make maps will create maps for hsi, rgb, or vi (with different settings)
+#make maps will create maps for hsi or rgb (with different settings)
 # choose a site, a year, 
 # whether you want to include other_locations
 # which size and which_buff
 # download is set to FALSE by default, 
 # full_site is set to FALSE by default
-
-make_maps <- function(which_rast, #hsi, rgb, or vi
-                      which_site, 
+make_maps <- function(which_site, 
                       which_year, #no default since maps need to coincide temporally
+                      
                       which_bout = 1, #default, but will need which_bout for 2020
                       other_locations = NULL, 
                       download = FALSE, #default, but can set to TRUE which will trigger site vrt
+                      
                       full_site = FALSE,
+                      
                       which_size,
                       which_buff,
+                      
+                      home_dir = "/Users/khuelsma/",
                       repo_dir = "/Users/khuelsma/Desktop/ARIDNEON/") {
   
   if (is.null(which_year)) stop('specify a year to make maps')
@@ -733,83 +618,89 @@ make_maps <- function(which_rast, #hsi, rgb, or vi
   if(!dir.exists(save_dir)) dir.create(save_dir, recursive = TRUE)
   
   # create names for these rasters
-  hsi_names <- if(which_rast == 'hsi') get_wvs(which_site, which_year)$band else NULL
-  vi_names <- c("CCI", "NIRv", "PRI")
   rgb_names <- c('red', 'green', 'blue')
   
-  # Import sampling plots shape files automatically:
+  # Import sampling plots shape files:
   NEON_plots_shp <- terra::vect('/Users/khuelsma/Desktop/NEON Spectral Variability/Relevant NEON Materials/NEON TOS Plots/All_NEON_TOS_Plot_Polygons_V11.shp')
   NEON_site_plot_polygons <- subset(NEON_plots_shp, 
                                     stringr::str_detect(NEON_plots_shp$plotID, which_site) & 
                                       stringr::str_detect(NEON_plots_shp$appMods, 'div'))
+  
   shapefile_plots <- list()  #create an empty list for other locations
   if (!is.null(other_locations)) { #if other_locations isn't NULL (NULL is default, so you have to add them)
     for (l in 1:length(other_locations)) {
       #read the shape file
       sf_obj <- sf::st_zm(sf::st_read(other_locations[[l]], quiet = TRUE))
       geom_type <- as.character(sf::st_geometry_type(sf_obj, by_geometry = FALSE))
+      terra_obj <- terra::vect(sf_obj) 
+      terra_obj$row <- 1:nrow(terra_obj)
+      terra_obj$plotID <- paste0('other_DA_', 
+                                 geom_type, '_',
+                                 1:nrow(terra_obj))
       
-      other_plots <- terra::vect(sf_obj)
-      other_plots$plotID <- paste0('other_DA_', 
-                                   geom_type, '_',
-                                   1:nrow(other_plots))
+      # Check geometry type on each; if it's a POINT we need to turn it into a polygon for cropping
+      if (str_detect(tolower(geom_type), 'point')) {
+        for (i in 1:nrow(terra_obj)) {
+          this_poly <- terra_obj[i,]
+          this_polyid <- as.character(this_poly$plotID) 
+          # establish extent, then turn it into a vector / polygon
+          poly_from_pt_ext <- terra::ext(terra::buffer(this_poly, which_buff))
+          poly_from_pt <- terra::vect(poly_from_pt_ext)
+        } #for each row in the shapefile, turn it into a polygon
+        } #if it's a point
       #can't rbind these, leave them in a list: 
-      shapefile_plots[[l]] <- other_plots[, "plotID"] 
+      shapefile_plots[[l]] <- terra_obj
     }
   }
   
-  all_plotIDs <- unique(NEON_site_plot_polygons$plotID)
+  site_raster <- get_site_raster(which_site, which_year, which_bout, other_locations, download, home_dir, repo_dir)
+  if (is.null(site_raster)) stop("Failed to build site raster. Check if files exist or set download = TRUE.")
+  
+  NEON_site_plots_projected <- terra::project(NEON_site_plot_polygons, terra::crs(site_raster))
+  #for each shapefile (other_locations)    
+  other_plots_projected <- list() #make an empty list with default of NULL to avoid errors later
   if (length(shapefile_plots) > 0) {
-    for (sp in shapefile_plots) all_plotIDs <- c(all_plotIDs, sp$plotID)
+    other_plots_projected <- lapply(shapefile_plots, function(x) terra::project(x, terra::crs(site_raster)))
   }
   
+  #combine them all
+  plot_inputs <- list(NEON_site_plots_projected)
+  if (length(other_plots_projected) > 0) {
+    plot_inputs <- append(plot_inputs, other_plots_projected)
+  }
+    
+  site_subplots <- get_site_subplots(which_site, which_size)
+  #need site_subplots on same projection as cropped rgb plot
+  site_subplots_projected <- terra::project(site_subplots, terra::crs(site_raster))
+  
   if (full_site == TRUE) {
+    #first, look for the pdf file name: FullSite_Map_ ... _rgb.pdf
     pdf_filename <- ifelse(which_bout == 1,
-                           paste0(repo_dir, "FullSite_Map_", which_site, "_", which_year, "_", which_rast, ".pdf"),
-                           paste0(repo_dir, "FullSite_Map_", which_site, "_", which_year, "_", which_rast, "_", which_bout, ".pdf"))
+                           paste0(repo_dir, "FullSite_Map_", which_site, "_", which_year, "_rgb.pdf"),
+                           paste0(repo_dir, "FullSite_Map_", which_site, "_", which_year, "_rgb_", which_bout, ".pdf"))
     if (file.exists(pdf_filename)) {
       print(paste("High-Res PDF already exists:", pdf_filename))
       return(NULL)
     } # have the pdf
+    
     # If it doesn't exist, make the raster, draw the shapefiles
-    site_raster <- get_site_raster(which_rast, which_site, which_year, which_bout, other_locations, download, repo_dir)
-    if (is.null(site_raster)) stop("Failed to build site raster. Check if files exist or set download = TRUE.")
-    
-    NEON_site_plots_projected <- terra::project(NEON_site_plot_polygons, terra::crs(site_raster))
-    
-    #for each shapefile (other_locations)    
-    other_plots_projected <- list() #make an empty list with default of NULL to avoid errors later
-    
-    if (length(shapefile_plots) > 0) {
-      other_plots_projected <- lapply(shapefile_plots, function(x) terra::project(x, terra::crs(site_raster)))
-    }
-    
     print("Drawing High-Res PDF...")
     pdf(pdf_filename, width = 15, height = 15)
     terra::plotRGB(site_raster, r = 1, g = 2, b = 3, stretch = 'lin',
                    maxcell = 1e7,  #saves space
-                   main = paste(which_site, which_year, "Full Site", toupper(which_rast)))
+                   main = paste(which_site, which_year, "Full Site RGB"))
     terra::plot(NEON_site_plots_projected, add = TRUE, border = "black", lwd = 6)
     terra::plot(NEON_site_plots_projected, add = TRUE, border = "yellow", lwd = 3)
 
     if (length(other_plots_projected) > 0) { #if we have other plots, add them
       
       for (op in other_plots_projected) {
-        # assign appropriate projection
-        terra::crs(op) <- terra::crs(site_raster)
-        # Check geometry type on each; if it's a POINT we need to turn it into a polygon for cropping
         gtype <- as.character(terra::geomtype(op))
         if (str_detect(tolower(gtype), "point")) {
-          for (i in 1:nrow(op)) {
-            this_poly <- op[i, ]
-            this_polyid <- as.character(op$plotID[i, ]) }
-        # establish extent, then turn it into a vector / polygon
-          poly_from_pt_ext <- terra::ext(terra::buffer(this_poly, which_buff)) #just giving it a reasonable buffer
-          poly_from_pt <- terra::vect(poly_from_pt_ext)
-          
           terra::plot(poly_from_pt, add = TRUE, border = "black", lwd = 6)
           terra::plot(poly_from_pt, add = TRUE, border = "turquoise", lwd = 3)
           } else {
+            #if it's a polygon just map it
           terra::plot(op, add = TRUE, border = "black", lwd = 6)
           terra::plot(op, add = TRUE, border = "pink", lwd = 3)
         }
@@ -821,128 +712,68 @@ make_maps <- function(which_rast, #hsi, rgb, or vi
   } #if full site = true
   
   #if not full site,
-
-  expected_files <- ifelse(which_bout == 1, 
-                           paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_hsi.tif"),
-                           paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_", which_bout, "_hsi.tif"))
-  site_raster <- NULL
-  
-  # ONLY bypass if we are dealing with HSI and all TIFs are already saved!
-  if (which_rast == 'hsi' && all(file.exists(expected_files))) {
-    ref_crs <- terra::crs(terra::rast(expected_files[1]))
-    NEON_site_plots_projected <- terra::project(NEON_site_plot_polygons, ref_crs)
-      
-      other_plots_projected <- list()
-      if (length(shapefile_plots) > 0) {
-        other_plots_projected <- lapply(shapefile_plots, function(x) terra::project(x, ref_crs))
-      }
-    } else { 
-      print(paste("Missing some", which_rast, "plots. Building VRT..."))
-      
-      site_raster <- get_site_raster(which_rast, which_site, which_year, which_bout, other_locations, download, repo_dir)
-      if (is.null(site_raster)) stop("Failed to build site raster. Check if files exist or set download = TRUE.")
-      
-      NEON_site_plots_projected <- terra::project(NEON_site_plot_polygons, terra::crs(site_raster))
-      other_plots_projected <- list() #new list to catch projected other plots
-      if (length(shapefile_plots) > 0) {
-        other_plots_projected <- lapply(shapefile_plots, function(x) terra::project(x, terra::crs(site_raster)))
-      }
-    }
-    site_subplots <- get_site_subplots(which_site, which_size)
-    target_crs <- if(is.null(site_raster)) ref_crs else terra::crs(site_raster)
-    neon_subplots_projected <- terra::project(site_subplots, target_crs)
+  site_output_list <- list() #establish site_output_list for individual plots:
+  for (i in 1:length(plot_inputs)) {
+    this_input <- plot_inputs[[i]] 
+    if (nrow(this_input) == 0) next 
     
-    site_output_list <- list() # Initialize the primary named list
-    #every plot is input; by default we at least have NEON plots
-    inputs <- list(NEON_site_plots_projected) 
-    if (!is.null(shapefile_plots)) {
-      # append() adds the list elements one by one, creating a clean list of SpatVectors
-      inputs <- append(inputs, other_plots_projected) 
-    }
-    for (i in 1:length(inputs)) {
-      this_input <- inputs[[i]]
-      if (nrow(this_input) == 0) next 
+    #this input is a particular plot. We loop over every PLOT, NEON's and other plots if added.
+    for (ID in 1:nrow(this_input)) {
+      this_plot <- this_input[ID,]
+      plotID <- as.character(this_plot$plotID)
       
-      #this input is a particular plot. We loop over every PLOT, NEON's and other plots if added.
-      for (ID in 1:nrow(this_input)) { 
-        # Loop over every PLOT in the site: NEON_site_plots_projected and other_plots_projected
+      plot_output_list <- list()
+      cropped_rgb_plot <- tryCatch({ 
+        terra::crop(site_raster, terra::ext(this_plot)) }, error = function(e) NULL)
+    #if we successfully cropped the plot, prep its names, save crop, and put it in the list for the plot and the site.
+    if(!is.null(cropped_rgb_plot)) {
+      #give cropped plot appropriate names
+      names(cropped_rgb_plot) <- rgb_names
+      plot_output_list[['plot_full_rgb']] <- cropped_rgb_plot
+      
+      #subplots in plot: 
+        # Check if this plot has 1m2 subplots
+        subplots_in_plot <- subset(site_subplots_projected, site_subplots_projected$plotID == plotID)
         
-        this_plot <- this_input[ID,]
-        plotID <- as.character(this_plot$plotID)
-        #if there are multiple bouts, add BOUT# at end
-        file_name <- ifelse(which_bout == 1, 
-                            paste0(save_dir, which_site, "_", which_year, "_", plotID, "_", which_rast, ".tif"),
-                            paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_", which_bout, "_hsi.tif"))
-        
-        cropped_plot <- NULL #placeholder
-        
-        if (which_rast == 'hsi' && file.exists(file_name)) { 
-          cropped_plot <- terra::rast(file_name) 
-        } else if (!is.null(site_raster)) {
-          cropped_plot <- tryCatch({ 
-            terra::crop(site_raster, terra::ext(this_plot)) }, error = function(e) NULL)
+        if (nrow(subplots_in_plot) > 0) {
+          # Swapped purrr::map_dfr for a standard loop, which is much better for lists
+          for (sub in 1:nrow(subplots_in_plot)) {
+            this_sub <- subplots_in_plot[sub, ]
+            subplotID <- as.character(this_sub$subplotID)         
+          # establish extent, then turn it into a vector / polygon
+          poly_from_pt_ext <- terra::ext(terra::buffer(this_sub, which_buff))
+          # Crop the 1m2 subplot directly from the 20x20m raster
+          sub_crop <- tryCatch({ terra::crop(cropped_rgb_plot, poly_from_pt_ext) }, error = function(e) NULL)
+          
+          if(!is.null(sub_crop)) {
+            #give cropped plot appropriate names
+            names(sub_crop) <- rgb_names
+            plot_output_list[[subplotID]] <- sub_crop
+          
+            } #if we have a cropped plot, add it to the plot list
+          }
         }
-          #if we successfully cropped the plot, prep its names, save crop, and put it in the list for the plot and the site.
-          if(!is.null(cropped_plot)) {
-            if (which_rast == 'hsi') {
-              #give cropped plot appropriate names
-              names(cropped_plot) <- hsi_names
-              if (!file.exists(file_name)) terra::writeRaster(cropped_plot, file_name, overwrite = TRUE)
-              } 
-            # For RGB/VI, output a tiny, lightweight PNG image instead!
-            else if (which_rast == 'vi') {
-                names(cropped_plot) <- vi_names
-                png_name <- ifelse(which_bout == 1, 
-                                   paste0(save_dir, which_site, "_", which_year, "_", plotID, "_", which_rast, ".png"),
-                                   paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_", which_bout, "_", which_rast, ".png"))
-                if (!file.exists(png_name)) {
-                  png(png_name, width = 500, height = 500)
-                  terra::plotRGB(cropped_plot, r=1, g=2, b=3, stretch='lin', main=paste(plotID, toupper(which_rast)))
-                  dev.off()
-                }
-            } else if (which_rast == 'rgb') {
-                names(cropped_plot) <- rgb_names
-              png_name <- ifelse(which_bout == 1, 
-                                 paste0(save_dir, which_site, "_", which_year, "_", plotID, "_", which_rast, ".png"),
-                                 paste0(save_dir, which_site, "_", which_year, "_", all_plotIDs, "_", which_bout, "_", which_rast, ".png"))
-              if (!file.exists(png_name)) {
-                png(png_name, width = 500, height = 500)
-                terra::plotRGB(cropped_plot, r=1, g=2, b=3, stretch='lin', main=paste(plotID, toupper(which_rast)))
-                dev.off()
-              }
-            }
-
-          plot_output_list <- list()
-          plot_output_list[['plot_full']] <- cropped_plot
-          
-          # Find all subplots that belong to this plot
-          subplots_in_plot <- subset(neon_subplots_projected, neon_subplots_projected$plotID == plotID)
-          
-          if (nrow(subplots_in_plot) > 0) {
-            #create square geometries for subplots:
-            sub_polys <- create_square_polygons(subplots_in_plot)
-            
-            for (sub in 1:nrow(sub_polys)) {
-              subplotID <- as.character(subplots_in_plot$subplotID[sub])
-              
-              # Buffer and crop from the already-cropped plot raster for speed
-              buff_ext <- terra::ext(terra::buffer(sub_polys[sub, ], which_buff))
-              cropped_subplot <- tryCatch({ terra::crop(cropped_plot, buff_ext) }, error = function(e) NULL)
-              # Safely assign names to subplot!
-              if (!is.null(cropped_subplot)) {
-                names(cropped_subplot) <- names(cropped_plot)
-                plot_output_list[[subplotID]] <- cropped_subplot
-                } #if we have cropped subplot
-              } #for each subplot
-          } #if we have other subplots in the plot
-          site_output_list[[plotID]] <- plot_output_list
-        } #cropped plot exists; put whole crop at a minimum into plot ID list
-      } #each input within the polygon
-    } #each polygon input
-    return(site_output_list)
+        site_output_list[[plotID]] <- plot_output_list
+        
+    }
+      }
+    }
+  return(site_output_list)
 }
 
-maplist_CPER2021rgb <- make_maps('rgb', 'CPER', 2021, other_locations = other_locations, which_size = 1, which_buff = 2)
+
+CPER_2020 <- make_maps('CPER', 2020, other_locations = other_locations, which_size = 1, which_buff = 2)
+CPER_2021 <- make_maps('CPER', 2021, other_locations = other_locations, which_size = 1, which_buff = 2)
+CPER_2024 <- make_maps('CPER', 2024, other_locations = other_locations, which_size = 1, which_buff = 2)
+
+plotRGB(CPER_2024$CPER_001$plot_full_rgb, stretch = 'lin')
+plotRGB(CPER_2024$CPER_002$plot_full_rgb, stretch = 'lin')
+plotRGB(CPER_2024$CPER_003$plot_full_rgb, stretch = 'lin')
+
+CPER2020extracted <- extract_from_maplist('CPER', 2020, other_locations = other_locations, which_size = 1, which_buff = 2)
+CPER2021extracted <- extract_from_maplist('CPER', 2021, other_locations = other_locations, which_size = 1, which_buff = 2)
+CPER2024extracted <- extract_from_maplist('CPER', 2024, other_locations = other_locations, which_size = 1, which_buff = 2)
+
 
 #extract from maplist will get us a dataframe of the hsi reflectance from maplist 
 extract_from_maplist <- function(which_site, 
@@ -969,13 +800,12 @@ extract_from_maplist <- function(which_site,
   # 1. Make sure all tiny HSI plots are saved to the hard drive (skips instantly if they are)
   cache_hsi_plots(which_site, which_year, which_bout, other_locations, download, 
                   home_dir = output_dir, repo_dir = repo_dir)
-  
   #need to save wavelength names
   wv_df <- get_wvs(which_site, which_year) #site doesn't really matter, but year does
   
   save_dir <- paste0(repo_dir, 'plots/')
   plot_files <- list.files(save_dir, pattern = paste0(which_site, "_", which_year, ".*_hsi\\.tif$"), full.names = TRUE)
-  print(plot_files)
+  
   if (length(plot_files) == 0) {
     warning("No HSI plots were found in the cache folder!")
     return(NULL)
@@ -987,10 +817,10 @@ extract_from_maplist <- function(which_site,
     
     plot_rast <- terra::rast(file_path)
     names(plot_rast) <- unique(wv_df$band)
-
-    
     #Extract plotID from the filename
-
+    eventID <- str_extract(file_path, "(?<=plots//).*(?=\\_hsi.tif)")
+    plot_year_string <- paste0(which_site, "_", which_year)
+    plotID <- sub(paste0(plot_year_string, "_"), "", eventID)
     # Check if this plot has 1m2 subplots
     subplots_in_plot <- subset(site_subplots, site_subplots$plotID == plotID)
     
@@ -1002,14 +832,12 @@ extract_from_maplist <- function(which_site,
       df$year <- which_year
       df$plotID <- plotID
       df$subplotID <- "plot_full"
-      df$eventID <- paste0(plotID, '_plot_full_', which_year, '_', bout_num)
+      df$eventID <- paste0(plotID, '_plot_full_', which_year)
       df$buff <- which_buff
       return(df)
       
-    } else {
-      # Has subplots -> Buffer and extract them!
-      neon_subplots_proj <- terra::project(subplots_in_plot, terra::crs(plot_rast))
-      sub_polys <- create_square_polygons(neon_subplots_proj)
+      } else {
+      sub_polys <- create_square_polygons(subplots_in_plot)
       buffed_subplots <- terra::buffer(sub_polys, which_buff) # which_buff = 1
       
       purrr::map_dfr(1:nrow(buffed_subplots), function(sub) {
